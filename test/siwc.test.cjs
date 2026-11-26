@@ -143,7 +143,7 @@ test('uses the fixed subscription endpoint for catalog and Responses without API
     assert.equal(url, SIWC_RESOURCE_URL + (init.method ? '/responses' : '/models'));
     assert.equal(init.headers.authorization, 'Bearer fixture');
     assert.equal(init.redirect, 'error');
-    if (init.method) assert.deepEqual(JSON.parse(init.body), { model: 'example', instructions: 'Guide', input: [{ role: 'user', content: 'Hi' }], store: false, stream: true });
+    if (init.method) assert.deepEqual(JSON.parse(init.body), { model: 'example', input: [{ role: 'developer', content: 'Guide' }, { role: 'user', content: 'Hi' }], store: false, stream: true, prompt_cache_options: { mode: 'implicit' } });
     return replies.shift();
   });
   assert.deepEqual(await discoverModels(connection), [{ id: 'example', displayName: 'Example' }]);

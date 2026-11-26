@@ -230,7 +230,9 @@ test('routes SIWC Responses with local reasoning replay and unchanged Google tra
       { type: 'reasoning', id: 'rs_a', encrypted_content: 'opaque-reasoning', summary: [] },
       { type: 'function_call', id: 'fc_a', call_id: 'call_a', name: 'read_file', arguments: '{}' },
     ] : [];
-    return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', output } })}\n\n`);
+    const diagnostics = sent.length === 2 ? { type: 'cache_miss', reason: 'tools_changed' } : undefined;
+    return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: {
+      id: `resp_${sent.length}`, status: 'completed', output, prompt_cache_diagnostics: diagnostics } })}\n\n`);
   });
   const catalog = await (await fetch(proxy.url + '/v1internal:fetchAvailableModels', { method: 'POST', body: '{}' })).json();
   const model = `${GROUP}-medium`;
@@ -239,12 +241,12 @@ test('routes SIWC Responses with local reasoning replay and unchanged Google tra
   const tools = [{ functionDeclarations: [{ name: 'read_file', parameters: { type: 'OBJECT', properties: {} } }] }];
   const user = { role: 'user', parts: [{ text: 'Read the sample' }] };
   const systemInstruction = { parts: [{ text: 'You are AGY.' }] };
-  const first = await generation(proxy, { model, project: 'google-project', request: { tools, systemInstruction, contents: [user] } });
+  const first = await generation(proxy, { model, project: 'google-project', request: { sessionId: 's1', tools, systemInstruction, contents: [user] } });
   assert.equal(first.status, 200);
   const call = events(await first.text()).flatMap(event => event.response.candidates?.[0]?.content?.parts || []).find(part => part.functionCall);
   assert.equal(call.functionCall.id, 'call_a');
   assert.equal(call.thoughtSignature, PLACEHOLDER_SIGNATURE);
-  const second = await generation(proxy, { model, request: { tools, systemInstruction, contents: [user,
+  const second = await generation(proxy, { model, request: { sessionId: 's1', tools, systemInstruction, contents: [user,
     { role: 'model', parts: [call] },
     { role: 'model', parts: [{ functionResponse: { id: 'call_a', name: 'read_file', response: { output: 'sample' } } }] },
   ] } });
@@ -254,11 +256,15 @@ test('routes SIWC Responses with local reasoning replay and unchanged Google tra
   for (const { headers, payload } of sent) {
     assert.equal(headers.authorization, 'Bearer test-oauth-token');
     assert.equal(headers['x-goog-api-client'], undefined);
-    assert.equal(payload.instructions, 'You are AGY.');
-    assert.doesNotMatch(JSON.stringify(payload), /google-token|google-project/);
+    assert.equal(payload.instructions, undefined);
+    assert.deepEqual(payload.input[0], { role: 'developer', content: 'You are AGY.' });
+    assert.doesNotMatch(JSON.stringify(payload), /google-token|google-project|"role":"system"/);
     assert.match(payload.prompt_cache_key, /^agy-lab-[0-9a-f]+$/);
+    assert.equal(payload.prompt_cache_options.mode, 'implicit');
   }
   assert.equal(sent[0].payload.prompt_cache_key, sent[1].payload.prompt_cache_key);
+  assert.equal(sent[0].payload.prompt_cache_options.comparison_response_id, undefined);
+  assert.equal(sent[1].payload.prompt_cache_options.comparison_response_id, 'resp_1');
   assert.ok(sent[1].payload.input.some(item => item.type === 'reasoning' && item.encrypted_content === 'opaque-reasoning'));
   assert.ok(sent[1].payload.input.some(item => item.type === 'function_call_output' && item.call_id === 'call_a'));
   const official = { model: 'gemini-4-neon-low', request: { contents: [user] } };

@@ -148,7 +148,7 @@ function requestFor(connection, request, effort, cache = {}) {
   const input = inputFor(request);
   if (cache.systemUpdate) input.push({ role: 'developer', content: cache.systemUpdate });
   const tools = toolFields(request, cache.allowedTools);
-  if (connection.authType === 'siwc') return subscriptionRequest(connection, input, effort, tools, cache.key);
+  if (connection.authType === 'siwc') return subscriptionRequest(connection, input, effort, tools, cache);
   const payload = {
     model: connection.model,
     input,
@@ -166,18 +166,18 @@ function requestFor(connection, request, effort, cache = {}) {
   return { ...payload, ...tools };
 }
 
-// The ChatGPT subscription endpoint takes the system prompt as `instructions` and accepts no
-// output-token limit; reasoning replay and the single-call rule apply only when tools are sent.
-function subscriptionRequest(connection, input, effort, tools, cacheKey) {
-  const payload = { model: connection.model };
-  if (input[0]?.role === 'system') {
-    const [system] = input.splice(0, 1);
-    payload.instructions = typeof system.content === 'string' ? system.content
-      : system.content.map(part => part.text).join('');
-  }
-  Object.assign(payload, { input, store: false, stream: true });
+// The ChatGPT subscription endpoint rejects system-role items and accepts no output-token limit;
+// reasoning replay and the single-call rule apply only when tools are sent. The system prompt goes
+// in a leading developer message: from GPT-6.2 on, top-level `instructions` follow the input and
+// are never cached. Implicit caching writes at the latest eligible message, and comparing with the
+// conversation's previous response makes OpenAI report why a call missed the cache.
+function subscriptionRequest(connection, input, effort, tools, cache = {}) {
+  if (input[0]?.role === 'system') input[0] = { ...input[0], role: 'developer' };
+  const payload = { model: connection.model, input, store: false, stream: true };
   if (effort) payload.reasoning = { effort };
-  if (cacheKey) payload.prompt_cache_key = cacheKey;
+  if (cache.key) payload.prompt_cache_key = cache.key;
+  payload.prompt_cache_options = { mode: 'implicit' };
+  if (cache.comparisonId) payload.prompt_cache_options.comparison_response_id = cache.comparisonId;
   if (tools.tools) {
     payload.parallel_tool_calls = false;
     payload.include = ['reasoning.encrypted_content'];
@@ -233,7 +233,8 @@ async function emitCompleted(response, onChunk) {
   }
 }
 
-// Resolves with the provider's cache-write count, which has no Gemini usage field.
+// Resolves with what has no Gemini usage field: the cache-write count, the response ID and the
+// provider's cache diagnosis.
 async function generateResponses({ connection, request, signal, onChunk, reasoningEffort, cache }) {
   const isSiwc = connection?.authType === 'siwc';
   const url = (isSiwc ? SIWC_RESOURCE_URL : normalizeBaseUrl(connection?.baseUrl)) + '/responses';
@@ -250,7 +251,7 @@ async function generateResponses({ connection, request, signal, onChunk, reasoni
   if (!response.body) throw new Error('The model provider returned an empty response');
 
   let finished = false;
-  let cacheWriteTokens;
+  let completed;
   for await (const data of sseData(response.body)) {
     if (data === '[DONE]') break;
     const event = JSON.parse(data);
@@ -261,7 +262,7 @@ async function generateResponses({ connection, request, signal, onChunk, reasoni
     } else if (event.type === 'response.completed' || event.type === 'response.incomplete') {
       if (finished) throw new Error('OpenAI returned multiple finish events');
       await emitCompleted(event.response, onChunk);
-      cacheWriteTokens = event.response.usage?.input_tokens_details?.cache_write_tokens;
+      completed = event.response;
       finished = true;
     } else if (event.type === 'response.failed' || event.type === 'error') {
       if (isSiwc) throw formatSiwcError(event.response || event, response.status);
@@ -272,7 +273,11 @@ async function generateResponses({ connection, request, signal, onChunk, reasoni
     }
   }
   if (!finished) throw new Error('The model stream ended before a finish event');
-  return { cacheWriteTokens };
+  return {
+    cacheWriteTokens: completed.usage?.input_tokens_details?.cache_write_tokens,
+    responseId: completed.id,
+    cacheDiagnostics: completed.prompt_cache_diagnostics,
+  };
 }
 
 module.exports = { generateResponses, requestFor };

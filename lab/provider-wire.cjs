@@ -186,7 +186,9 @@ async function postStream(url, init, { fetch: send = fetch, delay = CONNECT_RETR
     try {
       return await send(url, init);
     } catch (error) {
-      if (init.signal?.aborted) throw error;
+      // Network failures carry a system or undici error code (ECONNRESET, ENOTFOUND,
+      // UND_ERR_SOCKET…); a refused redirect or bad URL has none and is never transient.
+      if (init.signal?.aborted || !(error instanceof TypeError) || typeof error.cause?.code !== 'string') throw error;
       const cause = networkCause(error);
       if (attempt > CONNECT_RETRIES) {
         throw new Error(`${error.message}${cause ? ` (${cause})` : ''}，已自动重试 ${CONNECT_RETRIES} 次`, { cause: error });

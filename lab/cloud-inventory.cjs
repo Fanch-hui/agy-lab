@@ -178,7 +178,7 @@ class Inventory {
   // Accumulates the provider's prompt-cache hits and keeps recent prefix hashes: a hash that
   // changes between turns of one conversation means the cacheable prefix is not stable. Each
   // distinct system prompt and tool set is described once, by paragraph and tool hashes.
-  externalCall(url, { model, usage, session, requestType, userTurns, shape, systemUpdate, cacheWriteTokens }) {
+  externalCall(url, { model, usage, session, requestType, userTurns, shape, systemUpdate, cacheWriteTokens, cacheDiagnosis }) {
     const { entry } = this.entry('POST', url);
     const totals = entry.cache ??= { promptTokens: 0, cachedTokens: 0, hitRate: 0 };
     totals.promptTokens += usage?.promptTokenCount || 0;
@@ -189,6 +189,7 @@ class Inventory {
     const call = {
       session, requestType, userTurns, system: shape.system, tools: shape.tools, systemUpdate,
       promptTokens: usage?.promptTokenCount, cachedTokens: usage?.cachedContentTokenCount, cacheWriteTokens,
+      ...(cacheDiagnosis ? { cacheDiagnosis } : {}),
     };
     entry.recentCalls = [...(entry.recentCalls || []), call].slice(-MAX_CALLS);
     this.logCall(url, model, call, shape);
