@@ -24,10 +24,10 @@ function cacheKeyFor(connection) {
 
 // Only the official OpenAI Responses API is known to accept `allowed_tools` and developer
 // messages; other providers get the request as AGY built it.
-function cacheFor(connection, request, effort, stability, comparisonId) {
+function cacheFor(connection, request, effort, stability) {
   const key = cacheKeyFor(connection);
   // The subscription endpoint's acceptance of the other prefix measures is unverified.
-  if (connection.authType === 'siwc') return { request, cache: { key, comparisonId } };
+  if (connection.authType === 'siwc') return { request, cache: { key } };
   if (!stability || new URL(connection.baseUrl).origin !== OPENAI_ORIGIN ||
       !usesOpenAIResponses(connection, request, effort)) {
     return { request, cache: { key } };
@@ -39,18 +39,7 @@ function cacheFor(connection, request, effort, stability, comparisonId) {
   };
 }
 
-const MAX_CONVERSATIONS = 200;
-
 function createNativeRoute({ listConnections, getConnection, generate, slotTable, signatures, stability }) {
-  // The last response ID of each conversation, so the next call can ask why it missed the cache.
-  const lastResponses = new Map();
-  function remember(conversation, id) {
-    if (!conversation || !id) return;
-    lastResponses.delete(conversation);
-    lastResponses.set(conversation, id);
-    if (lastResponses.size > MAX_CONVERSATIONS) lastResponses.delete(lastResponses.keys().next().value);
-  }
-
   function matches(model) {
     return Boolean(resolveVariant(model, listConnections()));
   }
@@ -72,9 +61,7 @@ function createNativeRoute({ listConnections, getConnection, generate, slotTable
     const provider = `${connection.model}（${connection.authType === 'siwc' ? 'ChatGPT 订阅' : new URL(connection.baseUrl).host}）`;
     const original = structuredClone(envelope.request || {});
     signatures.reveal(original.contents);
-    const conversation = original.sessionId ? `${connection.id}:${original.sessionId}` : null;
-    const { request, cache } = cacheFor(connection, original, variant.effort, stability,
-      lastResponses.get(conversation));
+    const { request, cache } = cacheFor(connection, original, variant.effort, stability);
     const result = {
       // A hashed session marker shows whether Orchestrator sub-calls share one conversation key.
       session: request.sessionId ? digest(request.sessionId).slice(0, 8) : null,
@@ -101,9 +88,6 @@ function createNativeRoute({ listConnections, getConnection, generate, slotTable
         },
       });
       result.cacheWriteTokens = outcome?.cacheWriteTokens;
-      remember(conversation, outcome?.responseId);
-      const diagnosis = outcome?.cacheDiagnostics;
-      if (diagnosis) result.cacheDiagnosis = [diagnosis.type, diagnosis.reason].filter(Boolean).join(': ');
       response.end();
     } catch (error) {
       if (controller.signal.aborted) return result;

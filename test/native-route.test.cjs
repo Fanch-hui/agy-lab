@@ -230,9 +230,7 @@ test('routes SIWC Responses with local reasoning replay and unchanged Google tra
       { type: 'reasoning', id: 'rs_a', encrypted_content: 'opaque-reasoning', summary: [] },
       { type: 'function_call', id: 'fc_a', call_id: 'call_a', name: 'read_file', arguments: '{}' },
     ] : [];
-    const diagnostics = sent.length === 2 ? { type: 'cache_miss', reason: 'tools_changed' } : undefined;
-    return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: {
-      id: `resp_${sent.length}`, status: 'completed', output, prompt_cache_diagnostics: diagnostics } })}\n\n`);
+    return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', output } })}\n\n`);
   });
   const catalog = await (await fetch(proxy.url + '/v1internal:fetchAvailableModels', { method: 'POST', body: '{}' })).json();
   const model = `${GROUP}-medium`;
@@ -260,11 +258,9 @@ test('routes SIWC Responses with local reasoning replay and unchanged Google tra
     assert.deepEqual(payload.input[0], { role: 'developer', content: 'You are AGY.' });
     assert.doesNotMatch(JSON.stringify(payload), /google-token|google-project|"role":"system"/);
     assert.match(payload.prompt_cache_key, /^agy-lab-[0-9a-f]+$/);
-    assert.equal(payload.prompt_cache_options.mode, 'implicit');
+    assert.equal(payload.prompt_cache_options, undefined);
   }
   assert.equal(sent[0].payload.prompt_cache_key, sent[1].payload.prompt_cache_key);
-  assert.equal(sent[0].payload.prompt_cache_options.comparison_response_id, undefined);
-  assert.equal(sent[1].payload.prompt_cache_options.comparison_response_id, 'resp_1');
   assert.ok(sent[1].payload.input.some(item => item.type === 'reasoning' && item.encrypted_content === 'opaque-reasoning'));
   assert.ok(sent[1].payload.input.some(item => item.type === 'function_call_output' && item.call_id === 'call_a'));
   const official = { model: 'gemini-4-neon-low', request: { contents: [user] } };
