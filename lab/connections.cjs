@@ -8,6 +8,7 @@ const { normalizeBaseUrl } = require('./provider.cjs');
 const { discoverModels: fetchModels, normalizeReasoningEfforts } = require('./model-discovery.cjs');
 
 const siwc = require('./siwc.cjs');
+const { DEFAULT_CONTEXT_TOKENS, contextTokensOf } = require('./native-models.cjs');
 
 function filename() {
   return path.join(app.getPath('userData'), 'model-connections.json');
@@ -25,9 +26,10 @@ function write(rows) {
   fs.renameSync(file + '.tmp', file);
 }
 
-function publicRow({ id, model, baseUrl, reasoningEfforts, authType }) {
+function publicRow({ id, model, baseUrl, reasoningEfforts, authType, contextTokens }) {
   return {
     id, model, baseUrl: authType === 'siwc' ? siwc.SIWC_RESOURCE_URL : baseUrl,
+    contextTokens: contextTokens || DEFAULT_CONTEXT_TOKENS,
     ...(authType === 'siwc' ? { authType } : {}),
     ...(reasoningEfforts?.length ? { reasoningEfforts } : {}),
   };
@@ -43,6 +45,18 @@ function getConnection(id) {
   if (row.authType === 'siwc') throw new Error('ChatGPT 订阅连接需要异步获取令牌。');
   const apiKey = row.key ? safeStorage.decryptString(Buffer.from(row.key, 'base64')) : '';
   return { ...publicRow(row), apiKey };
+}
+
+// The language server reads the catalogue at startup, so a new size applies after a restart.
+function setContextTokens(id, value) {
+  const contextTokens = contextTokensOf(value);
+  if (!contextTokens) throw new Error('上下文大小需在 8K 到 10M 之间。');
+  const rows = records();
+  const row = rows.find(item => item.id === id);
+  if (!row) throw new Error('该连接已移除。');
+  row.contextTokens = contextTokens;
+  write(rows);
+  return publicRow(row);
 }
 
 function removeConnection(id) {
@@ -93,6 +107,9 @@ function saveDiscoveredModels({ connectionId, baseUrl, apiKey, models, authType 
       row = { id: randomUUID(), baseUrl, model };
       rows.push(row);
     }
+    // A size the service reports fills only an unset one, so a user's choice survives a refetch.
+    const reported = contextTokensOf(details.contextTokens);
+    if (reported && !row.contextTokens) row.contextTokens = reported;
     if (isSiwc) row.authType = 'siwc';
     if (key) row.key = key;
     else delete row.key;
@@ -106,6 +123,6 @@ function saveDiscoveredModels({ connectionId, baseUrl, apiKey, models, authType 
 }
 
 module.exports = {
-  listConnections, getConnection, resolveConnection, removeConnection,
+  listConnections, getConnection, resolveConnection, removeConnection, setContextTokens,
   discoverModels, saveDiscoveredModels,
 };

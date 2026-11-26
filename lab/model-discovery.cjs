@@ -11,6 +11,13 @@ function normalizeReasoningEfforts(value) {
   return [...new Set(value.filter(item => REASONING_EFFORTS.has(item)))];
 }
 
+// Services name the context size differently: ChatGPT and OpenAI use `context_window`,
+// OpenRouter `context_length`, LM Studio `max_context_length`.
+function reportedContext(model) {
+  const value = model.context_window ?? model.context_length ?? model.max_context_length;
+  return Number.isInteger(value) && value > 0 ? { contextTokens: value } : {};
+}
+
 async function discoverModels({ baseUrl, apiKey, authType }, signal) {
   const url = (authType === 'siwc' ? SIWC_RESOURCE_URL : normalizeBaseUrl(baseUrl.trim())) + '/models';
   const headers = { accept: 'application/json' };
@@ -25,7 +32,10 @@ async function discoverModels({ baseUrl, apiKey, authType }, signal) {
       if (model?.visibility !== 'list' || typeof model.slug !== 'string' || !model.slug.trim() || model.slug.length > 200 || entries.has(model.slug)) continue;
       const displayName = typeof model.display_name === 'string' && model.display_name.length <= 200 ? model.display_name.trim() : '';
       const reasoningEfforts = normalizeReasoningEfforts(model.supported_reasoning_efforts ?? model.reasoning_efforts);
-      entries.set(model.slug, { id: model.slug, ...(displayName ? { displayName } : {}), ...(reasoningEfforts.length ? { reasoningEfforts } : {}) });
+      entries.set(model.slug, {
+        id: model.slug, ...(displayName ? { displayName } : {}),
+        ...(reasoningEfforts.length ? { reasoningEfforts } : {}), ...reportedContext(model),
+      });
     }
     return [...entries.values()].sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
   }
@@ -38,7 +48,7 @@ async function discoverModels({ baseUrl, apiKey, authType }, signal) {
     const reasoningEfforts = normalizeReasoningEfforts(
       model.supported_reasoning_efforts ?? model.reasoning_efforts,
     );
-    models.set(model.id, reasoningEfforts.length ? { id: model.id, reasoningEfforts } : { id: model.id });
+    models.set(model.id, { id: model.id, ...(reasoningEfforts.length ? { reasoningEfforts } : {}), ...reportedContext(model) });
   }
   return [...models.values()].sort((left, right) => left.id.localeCompare(right.id, undefined, { numeric: true }));
 }

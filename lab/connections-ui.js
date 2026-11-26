@@ -29,6 +29,7 @@ function updateControls() {
   $('filter').disabled = busy;
   $('selectAll').disabled = busy || !visibleModels().length;
   $('models').querySelectorAll('input').forEach(control => { control.disabled = busy; });
+  $('list').querySelectorAll('input').forEach(control => { control.disabled = busy; });
   $('save').disabled = busy || !selectedModels.size;
   $('list').querySelectorAll('button').forEach(control => { control.disabled = busy; });
 }
@@ -98,6 +99,30 @@ async function runBusy(message, operation) {
   }
 }
 
+// Edits the context size in thousands of tokens; the language server picks it up on restart.
+function contextField(row) {
+  const field = document.createElement('label');
+  const input = document.createElement('input');
+  field.className = 'context';
+  field.title = '上下文大小，重启 Lab 后生效';
+  input.type = 'number';
+  input.min = '8';
+  input.max = '10000';
+  input.step = 'any';
+  input.value = String(row.contextTokens / 1000);
+  input.disabled = busy;
+  input.onchange = () => runBusy('正在保存…', async () => {
+    try {
+      const saved = await api.setContext(row.id, Math.round(Number(input.value) * 1000));
+      $('status').textContent = `${row.model} 的上下文已设为 ${saved.contextTokens / 1000}K，重启 Lab 后生效。`;
+    } finally {
+      await renderConnections();
+    }
+  });
+  field.append('上下文', input, 'K');
+  return field;
+}
+
 function button(label, action, className = 'quiet') {
   const control = document.createElement('button');
   control.type = 'button';
@@ -161,7 +186,7 @@ async function renderConnections() {
       $('status').textContent = '已移除 ' + row.model;
       await renderConnections();
     }), 'quiet danger');
-    item.append(title, add, chat, tools, remove);
+    item.append(title, contextField(row), add, chat, tools, remove);
     $('list').append(item);
   }
 }

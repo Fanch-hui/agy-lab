@@ -10,7 +10,11 @@ const { reasoningVariants } = require('./reasoning.cjs');
 const MODEL_PREFIX = 'agy-ext-';
 const SLOT_FIRST = 1200;
 const SLOT_LAST = 1650;
-const CONTEXT_TOKENS = 200000;
+// Defaults for a connection without its own context size. The language server compacts the
+// history before it reaches the declared window.
+const DEFAULT_CONTEXT_TOKENS = 200000;
+const MIN_CONTEXT_TOKENS = 8000;
+const MAX_CONTEXT_TOKENS = 10000000;
 const OUTPUT_TOKENS = 32768;
 
 function groupId(connection) {
@@ -29,11 +33,12 @@ function variantsFor(connection) {
   // from two providers apart.
   const label = `${connection.model} · ${connection.authType === 'siwc' ? 'ChatGPT 订阅' : new URL(connection.baseUrl).host}`;
   const efforts = reasoningVariants(connection).slice(1).map(option => option.effort);
-  if (!efforts.length) return { group, label, efforts, variants: [{ id: group, label, connectionId: connection.id }] };
+  const base = { connectionId: connection.id, contextTokens: connection.contextTokens || DEFAULT_CONTEXT_TOKENS };
+  if (!efforts.length) return { group, label, efforts, variants: [{ id: group, label, ...base }] };
   return {
     group, label, efforts,
     variants: efforts.map(effort => ({
-      id: `${group}-${effort}`, label: `${label} (${title(effort)})`, connectionId: connection.id, effort,
+      id: `${group}-${effort}`, label: `${label} (${title(effort)})`, ...base, effort,
     })),
   };
 }
@@ -87,8 +92,8 @@ function catalogueEntry(variant, slot) {
     supportsImages: false,
     supportsThinking: Boolean(variant.effort),
     recommended: true,
-    maxTokens: CONTEXT_TOKENS,
-    maxOutputTokens: OUTPUT_TOKENS,
+    maxTokens: variant.contextTokens,
+    maxOutputTokens: Math.min(OUTPUT_TOKENS, Math.floor(variant.contextTokens / 2)),
     quotaInfo: { remainingFraction: 1 },
   };
 }
@@ -136,4 +141,12 @@ function resolveVariant(modelId, connections) {
   return undefined;
 }
 
-module.exports = { MODEL_PREFIX, SlotTable, injectCatalogue, resolveVariant, variantsFor };
+// Returns a usable context size, or undefined when `value` is not one.
+function contextTokensOf(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= MIN_CONTEXT_TOKENS && number <= MAX_CONTEXT_TOKENS ? number : undefined;
+}
+
+module.exports = {
+  DEFAULT_CONTEXT_TOKENS, MODEL_PREFIX, SlotTable, contextTokensOf, injectCatalogue, resolveVariant, variantsFor,
+};

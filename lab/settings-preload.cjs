@@ -10,4 +10,5 @@ contextBridge.exposeInMainWorld('modelConnections', {
   saveDiscovered: input => ipcRenderer.invoke('agy-lab:save-discovered', input),
   test: (id, mode) => ipcRenderer.invoke('agy-lab:test', id, mode),
   remove: id => ipcRenderer.invoke('agy-lab:remove', id),
+  setContext: (id, tokens) => ipcRenderer.invoke('agy-lab:set-context', id, tokens),
 });

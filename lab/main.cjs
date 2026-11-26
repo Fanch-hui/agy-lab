@@ -59,6 +59,7 @@ register('discover', async input => {
 // The language server reads the model catalogue at startup, so changes apply after a restart.
 register('save-discovered', connections.saveDiscoveredModels);
 register('remove', connections.removeConnection);
+register('set-context', connections.setContextTokens);
 register('test', async (id, mode) => {
   if (pendingTest) throw new Error('正在测试连接。');
   const controller = new AbortController();

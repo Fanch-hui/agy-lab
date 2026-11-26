@@ -57,6 +57,12 @@ test('adds each reasoning effort as a grouped model on an unused placeholder', c
   assert.equal(again.models[ids[0]].model, 'MODEL_PLACEHOLDER_M1201');
   assert.equal(again.models[ids[1]].model, 'MODEL_PLACEHOLDER_M1204');
   assert.equal(again.models[ids[2]].model, 'MODEL_PLACEHOLDER_M1203');
+  assert.equal(again.models[ids[0]].maxTokens, 200000);
+  assert.equal(again.models[ids[0]].maxOutputTokens, 32768);
+
+  const small = injectCatalogue(officialCatalogue(), [{ ...connection, contextTokens: 32000 }], new SlotTable(file)).catalogue;
+  assert.equal(small.models[ids[0]].maxTokens, 32000);
+  assert.equal(small.models[ids[0]].maxOutputTokens, 16000);
 });
 
 test('conceals provider signatures and restores them for the provider', () => {
