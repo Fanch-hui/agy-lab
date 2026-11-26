@@ -12,10 +12,17 @@ const SLOT_FIRST = 1200;
 const SLOT_LAST = 1650;
 // Defaults for a connection without its own context size. The language server compacts the
 // history before it reaches the declared window.
-const DEFAULT_CONTEXT_TOKENS = 200000;
+const DEFAULT_CONTEXT_TOKENS = 512000;
 const MIN_CONTEXT_TOKENS = 8000;
 const MAX_CONTEXT_TOKENS = 10000000;
 const OUTPUT_TOKENS = 32768;
+// OpenAI lists 128K output for GPT-5 and later (GPT-6.2 Sol/Astra checked 2026-11-26).
+const GPT_OUTPUT_TOKENS = 128000;
+
+function outputTokensFor(connection, contextTokens) {
+  const limit = /^gpt-([5-9]|\d{2,})/i.test(connection.model) ? GPT_OUTPUT_TOKENS : OUTPUT_TOKENS;
+  return Math.min(limit, Math.floor(contextTokens / 2));
+}
 
 function groupId(connection) {
   return MODEL_PREFIX + connection.id.replace(/-/g, '').slice(0, 12);
@@ -33,7 +40,8 @@ function variantsFor(connection) {
   // from two providers apart.
   const label = `${connection.model} · ${connection.authType === 'siwc' ? 'ChatGPT 订阅' : new URL(connection.baseUrl).host}`;
   const efforts = reasoningVariants(connection).slice(1).map(option => option.effort);
-  const base = { connectionId: connection.id, contextTokens: connection.contextTokens || DEFAULT_CONTEXT_TOKENS };
+  const contextTokens = connection.contextTokens || DEFAULT_CONTEXT_TOKENS;
+  const base = { connectionId: connection.id, contextTokens, outputTokens: outputTokensFor(connection, contextTokens) };
   if (!efforts.length) return { group, label, efforts, variants: [{ id: group, label, ...base }] };
   return {
     group, label, efforts,
@@ -93,7 +101,7 @@ function catalogueEntry(variant, slot) {
     supportsThinking: Boolean(variant.effort),
     recommended: true,
     maxTokens: variant.contextTokens,
-    maxOutputTokens: Math.min(OUTPUT_TOKENS, Math.floor(variant.contextTokens / 2)),
+    maxOutputTokens: variant.outputTokens,
     quotaInfo: { remainingFraction: 1 },
   };
 }

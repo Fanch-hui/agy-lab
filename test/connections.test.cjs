@@ -51,7 +51,7 @@ test('adds discovered models with an existing connection credential', context =>
   assert.equal(connections.getConnection(same.id).apiKey, 'test-provider-key');
 
   // A reported context size fills an unset one; the user's own size survives a refetch.
-  assert.equal(same.contextTokens, 200000);
+  assert.equal(same.contextTokens, 512000);
   assert.equal(connections.saveDiscoveredModels({ connectionId: source.id, models: [{ id: 'new-model', contextTokens: 400000 }] })[0].contextTokens, 400000);
   assert.equal(connections.setContextTokens(same.id, 128000).contextTokens, 128000);
   assert.equal(connections.saveDiscoveredModels({ connectionId: source.id, models: [{ id: 'new-model', contextTokens: 400000 }] })[0].contextTokens, 128000);
@@ -91,6 +91,6 @@ test('keeps SIWC and API key connections separate for the same model', async con
     return 'test-oauth-token';
   });
   assert.deepEqual(await connections.resolveConnection(subscription.id, signal), {
-    id: subscription.id, model: 'gpt-5.4', authType: 'siwc', baseUrl, contextTokens: 200000, apiKey: 'test-oauth-token',
+    id: subscription.id, model: 'gpt-5.4', authType: 'siwc', baseUrl, contextTokens: 512000, apiKey: 'test-oauth-token',
   });
 });
