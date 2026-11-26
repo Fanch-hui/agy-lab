@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第三方模型连接</title>
+  <link rel="stylesheet" href="connections.css">
+  <script defer src="connections-ui.js"></script>
+</head>
+<body>
+  <main>
+    <section aria-labelledby="saved">
+      <h2 id="saved">已添加的模型</h2>
+      <div class="card">
+        <ul id="list"></ul>
+        <p id="empty" class="row muted">还没有已添加的模型。</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="subscriptionTitle">
+      <h2 id="subscriptionTitle">ChatGPT 订阅</h2>
+      <div class="card">
+        <div class="row">
+          <p id="siwcStatus" class="grow" aria-live="polite"></p>
+          <button id="siwcSignIn" type="button">Sign in with ChatGPT</button>
+          <button id="siwcCancel" type="button" hidden>取消登录</button>
+          <button id="siwcModels" type="button" disabled>获取订阅模型</button>
+          <button id="siwcSignOut" type="button" hidden>退出登录</button>
+        </div>
+      </div>
+    </section>
+
+    <form id="form" aria-labelledby="addTitle">
+      <h2 id="addTitle">添加模型</h2>
+      <div class="card">
+        <label class="row field">接口根地址<input id="baseUrl" type="url" required placeholder="http://127.0.0.1:1234/v1"></label>
+        <label class="row field">API Key<input id="apiKey" type="password" autocomplete="off" placeholder="本机模型可留空"></label>
+        <div class="row end">
+          <button id="newSource" type="button" hidden>使用新服务</button>
+          <button id="fetchModels" type="button">获取模型</button>
+        </div>
+      </div>
+
+      <div class="card picker" id="picker" hidden>
+        <div class="row picker-head">
+          <label class="check"><input id="selectAll" type="checkbox">全选</label>
+          <input id="filter" type="search" placeholder="搜索模型" aria-label="搜索模型">
+        </div>
+        <div id="models" role="group" aria-label="可添加的模型"></div>
+        <div class="row picker-foot">
+          <span id="modelCount" class="grow muted"></span>
+          <button id="save" class="primary" type="submit" disabled>添加所选模型</button>
+        </div>
+      </div>
+    </form>
+
+    <p role="status" id="status"></p>
+    <p class="note">API Key 连接由服务商计费，ChatGPT 连接消耗订阅共享额度。工具测试只读取临时样本文本。</p>
+  </main>
+</body>
+</html>

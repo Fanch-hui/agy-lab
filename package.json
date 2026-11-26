@@ -1,0 +1,16 @@
+{
+  "name": "agy-lab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local isolated experiment harness for Antigravity on macOS Apple Silicon with native third-party OpenAI-compatible models, ChatGPT subscription sign-in, and optional Chinese UI integration.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.cjs"
+  },
+  "devDependencies": {
+    "@electron/asar": "^4.0.0"
+  }
+}

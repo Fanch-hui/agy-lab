@@ -1,0 +1,139 @@
+'use strict';
+
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+const fs = require('node:fs');
+const { app, session, BrowserWindow, MenuItem, ipcMain, shell } = require('electron');
+require('./zh.cjs').enableChinese(app, session);
+const connections = require('./connections.cjs');
+const { generate } = require('./provider.cjs');
+const { probeTools } = require('./tool-probe.cjs');
+const { inventoryPath } = require('./cloud-proxy.cjs');
+const { exportModelDiagnostics } = require('./model-diagnostics.cjs');
+
+const settingsFile = path.join(__dirname, 'connections.html');
+let settingsWindow;
+let pendingTest;
+let pendingSignIn;
+const siwc = require('./siwc.cjs');
+let discovery;
+
+function register(command, fn) {
+  ipcMain.handle('agy-lab:' + command, async (event, ...args) => {
+    if (!settingsWindow || event.sender !== settingsWindow.webContents ||
+        event.senderFrame !== event.sender.mainFrame ||
+        event.senderFrame.url !== pathToFileURL(settingsFile).href) {
+      throw new Error('此操作仅限本地模型连接设置窗口。');
+    }
+    return fn(...args);
+  });
+}
+
+register('siwc-status', siwc.getStatus);
+register('siwc-signin', async reconsent => {
+  if (pendingSignIn) throw new Error('正在登录 ChatGPT。');
+  const controller = new AbortController();
+  pendingSignIn = controller;
+  try {
+    return await siwc.signIn({ signal: controller.signal, reconsent: reconsent === true, openBrowser: url => {
+      const target = new URL(url);
+      if (target.origin !== siwc.SIWC_ISSUER) throw new Error('无效的 ChatGPT 授权地址。');
+      return shell.openExternal(target.href);
+    } });
+  } finally { pendingSignIn = undefined; }
+});
+register('siwc-cancel-signin', () => pendingSignIn?.abort());
+register('siwc-signout', () => siwc.signOut());
+register('list', connections.listConnections);
+register('discover', async input => {
+  discovery?.abort();
+  const controller = new AbortController();
+  discovery = controller;
+  try {
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]);
+    return await connections.discoverModels(input, signal);
+  } finally {
+    if (discovery === controller) discovery = undefined;
+  }
+});
+// The language server reads the model catalogue at startup, so changes apply after a restart.
+register('save-discovered', connections.saveDiscoveredModels);
+register('remove', connections.removeConnection);
+register('test', async (id, mode) => {
+  if (pendingTest) throw new Error('正在测试连接。');
+  const controller = new AbortController();
+  pendingTest = controller;
+  let text = '';
+  try {
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]);
+    const connection = await connections.resolveConnection(id, signal);
+    if (mode === 'tools') {
+      const result = await probeTools(connection, signal);
+      return (result.ok ? '工具测试通过。' : '工具测试未通过。') + result.message;
+    }
+    await generate({
+      connection,
+      request: { contents: [{ role: 'user', parts: [{ text: 'Reply with OK.' }] }] },
+      signal,
+      onChunk: chunk => {
+        for (const part of chunk.candidates?.[0]?.content?.parts || []) {
+          if (part.text && !part.thought) text += part.text;
+        }
+      },
+    });
+    if (!text.trim()) throw new Error('服务没有返回文本。');
+    return text.trim().slice(0, 200);
+  } finally {
+    pendingTest = undefined;
+  }
+});
+
+function openConnections() {
+  if (settingsWindow) {
+    settingsWindow.show();
+    settingsWindow.focus();
+    return;
+  }
+  settingsWindow = new BrowserWindow({
+    title: '第三方模型连接',
+    width: 580, height: 680, minWidth: 430, minHeight: 460,
+    webPreferences: {
+      preload: path.join(__dirname, 'settings-preload.cjs'),
+      sandbox: true, nodeIntegration: false, contextIsolation: true,
+    },
+  });
+  settingsWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  settingsWindow.webContents.on('will-navigate', event => event.preventDefault());
+  settingsWindow.on('closed', () => {
+    pendingTest?.abort();
+    pendingSignIn?.abort();
+    discovery?.abort();
+    settingsWindow = undefined;
+  });
+  void settingsWindow.loadFile(settingsFile);
+}
+
+function addModelMenu(menu) {
+  if (menu.getMenuItemById('agy-lab-connections')) return;
+  const submenu = menu.items[0]?.submenu;
+  if (!submenu) return;
+  submenu.insert(Math.min(1, submenu.items.length), new MenuItem({
+    id: 'agy-lab-connections', label: '第三方模型连接…', click: openConnections,
+  }));
+  submenu.insert(Math.min(2, submenu.items.length), new MenuItem({
+    id: 'agy-lab-cloud-inventory', label: '显示云端请求清单', click: () => {
+      const file = inventoryPath();
+      if (fs.existsSync(file)) shell.showItemInFolder(file);
+      else void shell.openPath(path.dirname(file));
+    },
+  }));
+  submenu.insert(Math.min(3, submenu.items.length), new MenuItem({
+    id: 'agy-lab-model-diagnostics', label: '导出模型诊断', click: () => {
+      exportModelDiagnostics().then(file => shell.showItemInFolder(file), error => {
+        require('electron').dialog.showErrorBox('无法导出模型诊断', error.message);
+      });
+    },
+  }));
+}
+
+module.exports = { addModelMenu };
