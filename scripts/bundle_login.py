@@ -81,6 +81,7 @@ WINDOWS_X64_LAYOUT = WindowsLayout(
     original_fallback_rva=WINDOWS_ORIGINAL_FALLBACK_RVA,
     original_plugin_rva=WINDOWS_ORIGINAL_PLUGIN_RVA,
     loads=(
+        WindowsLeaPatch(0x30508F7, "488d15609ed900", "account", "authclient.NewAuthClient"),
         WindowsLeaPatch(0x10533E6, "488d157173d902", "account", "authstore.pluginFallbackPath"),
         WindowsLeaPatch(0x1054611, "488d154661d902", "account", "authstore.scopeFilePath"),
         WindowsLeaPatch(0x2B1FF59, "488d15a1b22601", "fallback", "codeassistclient.DefaultKeyringMarkerPath"),
@@ -125,13 +126,19 @@ class PE64Image:
         machine, section_count, _, _, _, optional_size, _ = struct.unpack("<HHIIIHH", header)
         self.optional_offset = self.pe_offset + 24
         stream.seek(self.optional_offset)
-        magic = struct.unpack("<H", stream.read(2))[0]
+        optional = stream.read(optional_size)
+        if len(optional) != optional_size or optional_size < 112:
+            raise ValueError("truncated PE32+ optional header")
+        magic = struct.unpack_from("<H", optional)[0]
         if machine != 0x8664 or magic != 0x20B:
             raise ValueError("expected a PE32+ x86-64 language server")
         self.section_count = section_count
         self.section_table_offset = self.optional_offset + optional_size
         self.checksum_offset = self.optional_offset + 64
-        self.certificate_directory_offset = self.optional_offset + 112 + 4 * 8
+        directory_count = struct.unpack_from("<I", optional, 108)[0]
+        self.certificate_directory_offset = None
+        if optional_size >= 152 and directory_count > 4:
+            self.certificate_directory_offset = self.optional_offset + 112 + 4 * 8
         self.sections = []
         stream.seek(self.section_table_offset)
         for _ in range(section_count):
@@ -289,6 +296,8 @@ def strip_pe_signature(binary_path):
         raise ValueError("PE signature cleanup only applies to a dist/ language_server.exe copy")
     with binary.open("r+b") as stream:
         pe = PE64Image(stream)
+        if pe.certificate_directory_offset is None:
+            return
         stream.seek(0, 2)
         file_size = stream.tell()
         stream.seek(pe.certificate_directory_offset)

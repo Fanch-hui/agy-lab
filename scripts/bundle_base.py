@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Shared steps for building the isolated AGY Lab app."""
 
+import hashlib
 import plistlib
 import re
 import shutil
@@ -9,6 +10,9 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_CHECKSUMS = PROJECT_ROOT / "build" / "source" / "electron-44.9.1-SHASUMS256.txt"
+# Visible name only: the profile, keychain entries and URL scheme keep the "AGY Lab" identity.
+DISPLAY_NAME = "Antigravity Lab"
 # Each version listed here has been checked against every build-time patch anchor.
 SUPPORTED_VERSIONS = ("2.35.1", "2.35.2")
 BUNDLE_ID = "com.local.agy-lab"
@@ -29,6 +33,33 @@ TEAM_BOUND_ENTITLEMENTS = {
 
 def run(*args):
     subprocess.run([str(value) for value in args], check=True)
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def verified_electron_archive(archive, checksums):
+    matches = []
+    for line in checksums.read_text(encoding="utf-8").splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[1].lstrip("*") == archive.name:
+            matches.append(fields[0])
+    if len(matches) != 1:
+        raise RuntimeError("Electron checksum manifest has no unique entry for the archive")
+    if sha256_file(archive) != matches[0].lower():
+        raise RuntimeError("Electron archive checksum does not match the official manifest")
+
+
+def bundle_chinese(project, renderer_source, scratch, app_root):
+    renderer = scratch / "renderer-main.js"
+    renderer.write_text(renderer_source, encoding="utf-8")
+    run("node", PROJECT_ROOT / "scripts" / "zh_bundle.mjs", project, renderer,
+        app_root / "dist" / "lab" / "zh-runtime.js")
 
 
 def find_asar():

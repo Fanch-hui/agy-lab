@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from bundle_login import (  # noqa: E402
     PE64Image,
     STORAGE_LITERALS,
+    WINDOWS_X64_LAYOUT,
     WindowsLayout,
     WindowsLeaPatch,
     WindowsLengthPatch,
@@ -41,6 +42,7 @@ def make_pe(certificate=False):
     optional = 0x98
     struct.pack_into("<H", data, optional, 0x20B)
     struct.pack_into("<I", data, optional + 64, 0x12345678)
+    struct.pack_into("<I", data, optional + 108, 16)
     section_table = optional + 0xF0
 
     def section(index, name, rva, raw_offset):
@@ -144,21 +146,48 @@ class WindowsPEPatchTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unexpected native credential storage name"):
                 _patch_windows_x64(binary, "2.35.2", layout)
 
+    def test_supported_layout_includes_native_credential_client(self):
+        layout = WINDOWS_X64_LAYOUT
+        anchors = [patch for patch in layout.loads if patch.function == "authclient.NewAuthClient"]
+        self.assertEqual(
+            anchors,
+            [WindowsLeaPatch(0x30508F7, "488d15609ed900", "account", "authclient.NewAuthClient")],
+        )
+        self.assertEqual(len(layout.loads), 12)
+        self.assertEqual(len(layout.length_loads), 2)
+        old_targets = {
+            "account": layout.original_account_rva,
+            "fallback": layout.original_fallback_rva,
+            "plugin": layout.original_plugin_rva,
+        }
+        new_targets = {
+            "account": layout.account_rva,
+            "fallback": layout.fallback_rva,
+            "plugin": layout.plugin_rva,
+        }
+        for patch in layout.loads:
+            with self.subTest(rva=hex(patch.rva), function=patch.function):
+                template = bytes.fromhex(patch.expected_hex)
+                self.assertEqual(len(template), 7)
+                self.assertEqual(template[:2], b"\x48\x8d")
+                self.assertEqual(template[2] & 0xC7, 0x05)
+                next_rva = patch.rva + len(template)
+                old_displacement = struct.unpack_from("<i", template, 3)[0]
+                self.assertEqual(next_rva + old_displacement, old_targets[patch.literal])
+                new_displacement = new_targets[patch.literal] - next_rva
+                self.assertTrue(-(1 << 31) <= new_displacement < (1 << 31))
+        for patch in layout.length_loads:
+            with self.subTest(rva=hex(patch.rva), function=patch.function):
+                immediate = struct.unpack_from("<I", bytes.fromhex(patch.expected_hex), patch.immediate_offset)[0]
+                self.assertEqual(immediate, 7)
+
     def strip_in_dist(self, data):
-        project_root = Path(__file__).resolve().parent.parent
-        target_dir = project_root / "dist" / "test-windows-pe-unit"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        binary = target_dir / "language_server.exe"
-        try:
-            binary.write_bytes(bytes(data))
+        dist = Path(__file__).resolve().parent.parent / "dist"
+        dist.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="test-windows-pe-", dir=dist) as temporary:
+            binary = self.write_binary(temporary, data)
             strip_pe_signature(binary)
             return binary.read_bytes()
-        finally:
-            binary.unlink(missing_ok=True)
-            try:
-                target_dir.rmdir()
-            except OSError:
-                pass
 
     def test_strip_pe_signature_truncates_trailing_certificate(self):
         stripped = self.strip_in_dist(make_pe(certificate=True))
@@ -171,6 +200,13 @@ class WindowsPEPatchTest(unittest.TestCase):
     def test_strip_pe_signature_leaves_unsigned_binary_unchanged(self):
         original = bytes(make_pe(certificate=False))
         self.assertEqual(self.strip_in_dist(original), original)
+
+    def test_strip_pe_signature_ignores_undeclared_certificate_directory(self):
+        for directory_count in (0, 4):
+            with self.subTest(directory_count=directory_count):
+                original = make_pe(certificate=True)
+                struct.pack_into("<I", original, 0x98 + 108, directory_count)
+                self.assertEqual(self.strip_in_dist(original), bytes(original))
 
 
 if __name__ == "__main__":

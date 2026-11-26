@@ -2,7 +2,6 @@
 """Build AGY Lab using the unmodified Electron development distribution."""
 
 import argparse
-import hashlib
 import json
 import plistlib
 import shutil
@@ -10,8 +9,9 @@ import tempfile
 from pathlib import Path
 
 from bundle_base import (
-    BUNDLE_ID, OFFICIAL_REQUIREMENT, PROJECT_ROOT, SUPPORTED_VERSIONS,
-    find_asar, install_lab, replace_once, run, sign_item, update_file,
+    BUNDLE_ID, DEFAULT_CHECKSUMS, DISPLAY_NAME, OFFICIAL_REQUIREMENT, PROJECT_ROOT,
+    SUPPORTED_VERSIONS, bundle_chinese, find_asar, install_lab, run,
+    replace_once, sign_item, update_file, verified_electron_archive,
 )
 from bundle_login import patch_login
 from renderer_patch import patch_renderer
@@ -19,31 +19,12 @@ from renderer_patch import patch_renderer
 
 DEFAULT_SOURCE = Path("/Applications/Antigravity.app")
 DEFAULT_ARCHIVE = PROJECT_ROOT / "build" / "source" / "electron-v44.9.1-darwin-arm64.zip"
-DEFAULT_CHECKSUMS = PROJECT_ROOT / "build" / "source" / "electron-44.9.1-SHASUMS256.txt"
-# Visible name only: the profile, keychain entries and URL scheme keep the "AGY Lab" identity.
-DISPLAY_NAME = "Antigravity Lab"
 DEFAULT_OUTPUT = PROJECT_ROOT / "dist" / f"{DISPLAY_NAME}.app"
 RESOURCES_EXPRESSION = 'require("path").dirname(require("electron").app.getAppPath())'
 PACKAGED_FILES = [
     "cablev2.js", "computer/index.js", "computer/permissionsIpc.js", "debugConsole.js",
     "keybindings.js", "languageServer.js", "main.js", "paths.js", "updater.js", "utils.js",
 ]
-
-
-def verified_electron_archive(archive, checksums):
-    matches = []
-    for line in checksums.read_text(encoding="utf-8").splitlines():
-        fields = line.split()
-        if len(fields) == 2 and fields[1].lstrip("*") == archive.name:
-            matches.append(fields[0])
-    if len(matches) != 1:
-        raise RuntimeError("Electron checksum manifest has no unique entry for the archive")
-    digest = hashlib.sha256()
-    with archive.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    if digest.hexdigest() != matches[0].lower():
-        raise RuntimeError("Electron archive checksum does not match the official manifest")
 
 
 def patch_development_runtime(app_root):
@@ -117,13 +98,6 @@ def make_launcher(staged, version):
         "-framework", "CoreServices", PROJECT_ROOT / "scripts" / "launcher.m",
         "-o", executable,
     )
-
-
-def bundle_chinese(project, renderer_source, scratch, app_root):
-    renderer = scratch / "renderer-main.js"
-    renderer.write_text(renderer_source, encoding="utf-8")
-    run("node", PROJECT_ROOT / "scripts" / "zh_bundle.mjs", project, renderer,
-        app_root / "dist" / "lab" / "zh-runtime.js")
 
 
 def build(source, archive, checksums, output, zh_project=None):

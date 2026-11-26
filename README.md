@@ -49,15 +49,17 @@ python3 scripts/build_app.py --source /Applications/Antigravity.app
 python scripts\build_app.py --source "$env:LOCALAPPDATA\Programs\antigravity"
 ```
 
-Windows 信任链不以安装后的可执行文件 Authenticode 状态为依据：当前 2.35.1/2.35.2 安装后的 `Antigravity.exe`、`resources\bin\language_server.exe` 以及官方 Electron `electron.exe` 均被 Windows 报告为 `NotSigned`，即使官方 NSIS 安装包本身具有有效 Google LLC 签名。因此构建脚本将官方安装包提取出的核心输入文件 SHA-256 按版本登记在 `scripts/platform_windows.py` 中，构建时先严格核验 `--source` 内的 `resources\app.asar`、`resources\bin\language_server.exe`、`resources\elevate.exe`、`resources\app-update.yml` 以及 `resources\app.asar.unpacked` 的确定性树哈希，再核验应用版本和全部补丁锚点；任何一项不匹配都会停止。当前两个受支持版本的 `resources\bin\` 中没有其他关键脚本或可执行文件；若出现未登记文件，构建会拒绝继续。
+Windows 不依赖已安装可执行文件的 Authenticode 状态：受支持版本的 `Antigravity.exe` 和 `language_server.exe` 在安装后是 `NotSigned`，但官方 NSIS 安装包本身具有有效 Google LLC 签名。构建会用版本对应的已登记哈希核验 `--source` 下的 `resources\app.asar`、`resources\bin\language_server.exe`，以及 `resources\app.asar.unpacked` 下文件相对路径和内容的确定性树哈希；并核验 ASAR 内的版本和补丁锚点。`resources\bin\` 下若出现未登记的 `.exe`、`.cmd`、`.bat`、`.ps1` 或 `.js`，构建也会停止。Electron ZIP 则使用随附的官方 SHA-256 清单核验，并检查归档内的 Electron 版本。
 
-`--installer` 是可选的额外来源证明，只在显式传入时校验该 NSIS 安装包具有有效 Google LLC 签名且产品版本与输入目录一致；脚本不会扫描或猜测安装包位置：
+`--installer` 是可选的额外来源校验。只有显式传入时，脚本才会要求该 NSIS 安装包具有有效 Google LLC Authenticode 签名，且产品版本与已核验的安装目录一致。脚本不会自动寻找安装包：
 
 ```powershell
 python scripts\build_app.py --source C:\path\to\antigravity --installer C:\path\to\Antigravity-x64.exe
 ```
 
-语言服务副本的 PE Certificate Table 处理保持兼容：当前官方文件没有证书表时直接跳过；如果未来官方补签，脚本会剥离补丁后失效的尾部签名块并清零校验和。Windows 副本使用独立数据目录、Windows 凭据隔离、`agy-lab://` 回调、系统托盘入口，并将 Launcher 的 AppUserModelID 设置为 `com.local.agy-lab`。
+如果语言服务副本没有 PE 证书表，构建会跳过证书清理；如果存在补丁后失效的尾部证书块，构建会从副本移除它并清零 PE 校验和。Windows 副本使用独立数据目录、Windows 凭据隔离、`agy-lab://` 回调、系统托盘入口及 `com.local.agy-lab` AppUserModelID。
+
+Windows 第三方模型目前仅支持本地工作区，不支持 WSL 或远程工作区。
 
 ### 可选：中文界面
 
@@ -72,7 +74,7 @@ python3 scripts/build_app.py --source /Applications/Antigravity.app --zh /path/t
 ### 验证与常见问题
 
 - `npm test` 运行自动化测试，不需要 Antigravity 安装包或真实账号。测试中的本地 HTTP 服务需要能访问 `127.0.0.1`。真实登录、界面和 Orchestrator 交接需手动验收。
-- `python -m unittest test.test_bundle_login_windows -v` 运行 Windows PE 补丁单元测试。
+- `python -m unittest discover -s test -v` 运行 Python 单元测试，包括 Windows PE 补丁和构建输入验证，不需要真实安装包或 PowerShell。
 - **升级原版后构建失败**：本项目按受支持的版本、输入哈希及补丁锚点检查，不保证新版兼容。请使用支持的版本或等待对应适配，不要跳过校验。
 - **macOS 提示应用无法验证**：Lab 是在本机构建、临时签名的副本，不是 Google 签名或 Apple 公证的发行版。先确认源文件和构建过程可信，再按 macOS 提示处理；不要关闭全局安全检查。
 

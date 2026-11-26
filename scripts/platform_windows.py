@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -11,15 +12,17 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from bundle_base import PROJECT_ROOT, find_asar, install_lab, run
+from bundle_base import (
+    DEFAULT_CHECKSUMS, DISPLAY_NAME, PROJECT_ROOT, bundle_chinese, find_asar,
+    install_lab, run, sha256_file, verified_electron_archive,
+)
 from bundle_login import patch_login, strip_pe_signature
 from renderer_patch import patch_renderer
 
 
-DEFAULT_SOURCE = Path.home() / "AppData" / "Local" / "Programs" / "antigravity"
+LOCAL_APP_DATA = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+DEFAULT_SOURCE = LOCAL_APP_DATA / "Programs" / "antigravity"
 DEFAULT_ARCHIVE = PROJECT_ROOT / "build" / "source" / "electron-v44.9.1-win32-x64.zip"
-DEFAULT_CHECKSUMS = PROJECT_ROOT / "build" / "source" / "electron-44.9.1-SHASUMS256.txt"
-DISPLAY_NAME = "Antigravity Lab"
 DEFAULT_OUTPUT = PROJECT_ROOT / "dist" / DISPLAY_NAME
 EXPECTED_ELECTRON_VERSION = "44.9.1"
 # Digests recorded from installation trees produced by signature-valid Google LLC
@@ -28,14 +31,10 @@ EXPECTED_ELECTRON_VERSION = "44.9.1"
 WINDOWS_INPUT_SHA256 = {
     "2.35.1": {
         "app.asar": "9f0aad7274795d7fbde04931d96b348dcfc5f3d81d7373e6b70aeb09307442df",
-        "app-update.yml": "7f5e7ecae74c2a2483979d085b39f59df66a908988d46d73dea8eefc038de2ba",
-        "elevate.exe": "9b1fbf0c11c520ae714af8aa9af12cfd48503eedecd7398d8992ee94d1b4dc37",
         "bin/language_server.exe": "73ce9a2405b455a93d1f13db2ae555da50406110217a349b6dd85c377fbdb9d1",
     },
     "2.35.2": {
         "app.asar": "e057115571cf5085406d20f2427a5afac272b712ec84332c7157da0113d4b2d0",
-        "app-update.yml": "7f5e7ecae74c2a2483979d085b39f59df66a908988d46d73dea8eefc038de2ba",
-        "elevate.exe": "9b1fbf0c11c520ae714af8aa9af12cfd48503eedecd7398d8992ee94d1b4dc37",
         "bin/language_server.exe": "fcdf7454007c6edc8162e601628c28cc1e6f575be849f329bb864c41ba6e6b02",
     },
 }
@@ -45,32 +44,11 @@ WINDOWS_UNPACKED_TREE_SHA256 = {
 }
 
 
-def verified_electron_archive(archive, checksums):
-    matches = []
-    for line in checksums.read_text(encoding="utf-8").splitlines():
-        fields = line.split()
-        if len(fields) == 2 and fields[1].lstrip("*") == archive.name:
-            matches.append(fields[0])
-    if len(matches) != 1:
-        raise RuntimeError("Electron checksum manifest has no unique entry for the archive")
-    digest = hashlib.sha256()
-    with archive.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    if digest.hexdigest() != matches[0].lower():
-        raise RuntimeError("Electron archive checksum does not match the official manifest")
-
-
-def powershell_quote(path):
-    return "'" + str(path).replace("'", "''") + "'"
-
-
 def installer_metadata(installer):
-    quoted = powershell_quote(installer)
     command = (
-        f"$path = {quoted};"
-        "$item = Get-Item -LiteralPath $path;"
-        "$signature = Get-AuthenticodeSignature -FilePath $item.FullName;"
+        "$ErrorActionPreference = 'Stop';"
+        "$item = Get-Item -LiteralPath $env:AGY_INSTALLER_PATH;"
+        "$signature = Get-AuthenticodeSignature -LiteralPath $item.FullName;"
         "$subject = ''; if ($signature.SignerCertificate) { $subject = $signature.SignerCertificate.Subject };"
         "[pscustomobject]@{"
         "Status=$signature.Status.ToString();"
@@ -80,6 +58,7 @@ def installer_metadata(installer):
     )
     result = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+        env={**os.environ, "AGY_INSTALLER_PATH": str(installer)},
         capture_output=True,
         text=True,
     )
@@ -103,17 +82,9 @@ def validate_installer(installer, version):
             "The Antigravity installer must have a valid Google LLC signature "
             f"(status={metadata.get('Status')!r}, subject={subject!r})"
         )
-    product_version = metadata.get("ProductVersion")
+    product_version = (metadata.get("ProductVersion") or "").strip()
     if product_version != version:
         raise RuntimeError(f"Installer version {product_version!r} does not match installed Antigravity {version!r}")
-
-
-def sha256_file(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def tree_sha256(root):
@@ -199,13 +170,6 @@ def copy_tree(source, target):
             shutil.copy2(item, destination)
 
 
-def bundle_chinese(project, renderer_source, scratch, app_root):
-    renderer = scratch / "renderer-main.js"
-    renderer.write_text(renderer_source, encoding="utf-8")
-    run("node", PROJECT_ROOT / "scripts" / "zh_bundle.mjs", project, renderer,
-        app_root / "dist" / "lab" / "zh-runtime.js")
-
-
 def read_app_version(app_root):
     package_file = app_root / "package.json"
     package = json.loads(package_file.read_text(encoding="utf-8"))
@@ -268,8 +232,6 @@ def build(source, archive, checksums, output, installer=None, zh_project=None):
             default_app.unlink()
         (resources / "bin").mkdir(parents=True, exist_ok=True)
         shutil.copy2(original_server, resources / "bin" / "language_server.exe")
-        for name in ("app-update.yml", "elevate.exe"):
-            shutil.copy2(original_resources / name, resources / name)
 
         install_lab(app_root, PROJECT_ROOT / "lab")
         package_file = app_root / "package.json"
