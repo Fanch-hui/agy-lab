@@ -32,17 +32,17 @@ def run(*args):
 
 
 def find_asar():
+    local_mjs = PROJECT_ROOT / "node_modules" / "@electron" / "asar" / "bin" / "asar.mjs"
+    if local_mjs.is_file():
+        node = shutil.which("node")
+        if node:
+            return [node, str(local_mjs)]
     local_bin = PROJECT_ROOT / "node_modules" / ".bin" / "asar"
     if local_bin.is_file():
         return [str(local_bin)]
     executable = shutil.which("asar")
     if executable:
         return [executable]
-    local_mjs = PROJECT_ROOT / "node_modules" / "@electron" / "asar" / "bin" / "asar.mjs"
-    if local_mjs.is_file():
-        node = shutil.which("node")
-        if node:
-            return [node, str(local_mjs)]
     raise RuntimeError(
         "The @electron/asar command is required to build the app. "
         "Run 'npm install' or install '@electron/asar' globally."
@@ -66,6 +66,7 @@ def patch_main(app_root):
     bootstrap = '''"use strict";
 {
     const app = require("electron").app;
+    if (process.platform === "win32") app.setAppUserModelId("com.local.agy-lab");
     const path = require("node:path");
     const fs = require("node:fs");
     const profile = path.join(app.getPath("appData"), "AGY Lab");
@@ -87,11 +88,17 @@ def patch_main(app_root):
             "        // The independent copy has no IDE data migration.",
             "IDE migration wizard",
         )
-        return replace_once(
+        source = replace_once(
             source,
             "const PROTOCOL = (0, signInReturn_1.protocolSchemeFor)(electron_1.app.getName());",
             "const PROTOCOL = 'agy-lab';",
             "protocol selection",
+        )
+        return replace_once(
+            source,
+            "        });\n        // The app menu bar isn't reachable on Windows (hidden title bar), so",
+            "        });\n        if (process.platform === \"win32\") require('./lab/main.cjs').addTrayMenu(tray_1.insertTrayMenuItem);\n        // The app menu bar isn't reachable on Windows (hidden title bar), so",
+            "Windows tray insertion point",
         )
 
     update_file(path, transform)

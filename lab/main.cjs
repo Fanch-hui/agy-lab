@@ -97,11 +97,13 @@ function openConnections() {
   settingsWindow = new BrowserWindow({
     title: '第三方模型连接',
     width: 580, height: 680, minWidth: 430, minHeight: 460,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'settings-preload.cjs'),
       sandbox: true, nodeIntegration: false, contextIsolation: true,
     },
   });
+  if (process.platform === 'win32') settingsWindow.setMenu(null);
   settingsWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   settingsWindow.webContents.on('will-navigate', event => event.preventDefault());
   settingsWindow.on('closed', () => {
@@ -113,27 +115,38 @@ function openConnections() {
   void settingsWindow.loadFile(settingsFile);
 }
 
+function showCloudInventory() {
+  const file = inventoryPath();
+  if (fs.existsSync(file)) shell.showItemInFolder(file);
+  else void shell.openPath(path.dirname(file));
+}
+
+function showModelDiagnostics() {
+  exportModelDiagnostics().then(file => shell.showItemInFolder(file), error => {
+    require('electron').dialog.showErrorBox('无法导出模型诊断', error.message);
+  });
+}
+
+function labMenuItems() {
+  return [
+    { id: 'agy-lab-connections', label: '第三方模型连接…', click: openConnections },
+    { id: 'agy-lab-cloud-inventory', label: '显示云端请求清单', click: showCloudInventory },
+    { id: 'agy-lab-model-diagnostics', label: '导出模型诊断', click: showModelDiagnostics },
+  ];
+}
+
 function addModelMenu(menu) {
   if (menu.getMenuItemById('agy-lab-connections')) return;
   const submenu = menu.items[0]?.submenu;
   if (!submenu) return;
-  submenu.insert(Math.min(1, submenu.items.length), new MenuItem({
-    id: 'agy-lab-connections', label: '第三方模型连接…', click: openConnections,
-  }));
-  submenu.insert(Math.min(2, submenu.items.length), new MenuItem({
-    id: 'agy-lab-cloud-inventory', label: '显示云端请求清单', click: () => {
-      const file = inventoryPath();
-      if (fs.existsSync(file)) shell.showItemInFolder(file);
-      else void shell.openPath(path.dirname(file));
-    },
-  }));
-  submenu.insert(Math.min(3, submenu.items.length), new MenuItem({
-    id: 'agy-lab-model-diagnostics', label: '导出模型诊断', click: () => {
-      exportModelDiagnostics().then(file => shell.showItemInFolder(file), error => {
-        require('electron').dialog.showErrorBox('无法导出模型诊断', error.message);
-      });
-    },
-  }));
+  labMenuItems().forEach((item, index) => {
+    submenu.insert(Math.min(index + 1, submenu.items.length), new MenuItem(item));
+  });
 }
 
-module.exports = { addModelMenu };
+function addTrayMenu(insertTrayMenuItem) {
+  insertTrayMenuItem(3, { type: 'separator' });
+  labMenuItems().forEach((item, index) => insertTrayMenuItem(4 + index, item));
+}
+
+module.exports = { addModelMenu, addTrayMenu };

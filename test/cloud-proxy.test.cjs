@@ -76,7 +76,7 @@ test('records only path, query names, model and status', async context => {
   assert.equal(rows['/v1internal:streamGenerateContent'].count, 2);
   assert.deepEqual(rows['/v1internal:loadCodeAssist'].queryKeys, ['key']);
   assert.deepEqual(rows['/missing'].statuses, { 404: 1 });
-  assert.equal(fs.statSync(inventoryFile).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(inventoryFile).mode & 0o777, 0o600);
 });
 
 test('reports an unreachable endpoint without retrying', async context => {

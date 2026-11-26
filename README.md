@@ -1,12 +1,12 @@
 # AGY Lab
 
-面向 macOS Apple Silicon 的 Antigravity 本机实验副本，支持在原生模型选择器与 Orchestrator 中使用第三方模型。Lab 使用独立的应用标识（`com.local.agy-lab`）、数据目录、钥匙串条目和 `agy-lab://` 登录回调，不覆盖原版配置或会话。
+面向 macOS Apple Silicon 与 Windows x64 的 Antigravity 本机实验副本，支持在原生模型选择器与 Orchestrator 中使用第三方模型。Lab 使用独立的应用标识（`com.local.agy-lab`）、数据目录、系统凭据存储和 `agy-lab://` 登录回调，不覆盖原版配置或会话。
 
-> **非官方项目。** AGY Lab 与 Google、Antigravity 或 OpenAI 无官方关联。仓库仅发布项目源码和本地构建脚本，不分发 Antigravity 二进制、`app.asar`、图标、Electron 压缩包或构建好的应用。请使用自己合法取得、具有有效官方签名的 Antigravity 安装包在本机生成副本。修改客户端或使用实验性订阅登录前，请自行确认适用的许可、服务条款和账号资格。
+> **非官方项目。** AGY Lab 与 Google、Antigravity 或 OpenAI 无官方关联。仓库仅发布项目源码和本地构建脚本，不分发 Antigravity 二进制、`app.asar`、图标、Electron 压缩包或构建好的应用。请使用自己合法取得的 Antigravity 安装包在本机生成副本。修改客户端或使用实验性订阅登录前，请自行确认适用的许可、服务条款和账号资格。
 
 ## 连接第三方模型
 
-1. 打开 AGY Lab，照常使用 Google 账号登录主窗口，再打开菜单栏 **AGY Lab → 第三方模型连接…**。
+1. 打开 AGY Lab，照常使用 Google 账号登录主窗口，再打开 **AGY Lab → 第三方模型连接…**。在 Windows 上，这些入口位于系统托盘菜单。
 2. 选择连接方式：
    - **API Key**：输入 OpenAI 兼容服务的接口根地址和 Key，点 **获取模型**。已有连接可从列表复用凭据。同一服务的目录可能包括不支持聊天的模型，可用 **测试工具** 检查工具调用兼容性。
    - **ChatGPT 订阅（实验性）**：点 **Sign in with ChatGPT**，在浏览器完成授权并允许订阅共享，再点 **获取订阅模型**。可用性取决于账号资格、授权和服务端支持；该连接使用订阅共享额度，达到上限后不会自动切到 API 计费。
@@ -21,21 +21,43 @@
 - 如果外部请求在收到 HTTP 响应前因网络错误失败（如连接被重置、DNS 解析失败），最多重试 3 次（间隔 1、2、4 秒）；拒绝重定向等确定性错误不重试；收到错误状态、响应开始后失败或用户取消时不重试。最终错误会显示模型、服务商及可用的失败原因（如网络错误码），不会自动换用其他模型。
 - **显示云端请求清单**查看路径、状态码及请求结构统计；清单不记录请求头、令牌、对话正文或文件内容。**导出模型诊断**可查看语言服务给界面的模型列表。分享诊断文件前请先检查其中的模型名、工具名和其他环境信息。
 
-API Key 和 ChatGPT OAuth 凭据由 Electron `safeStorage` 加密后保存在 Lab 用户数据目录。更多边界说明和漏洞报告方式见 [SECURITY.md](SECURITY.md)。
+API Key 和 ChatGPT OAuth 凭据由 Electron `safeStorage` 加密后保存在 Lab 用户数据目录；macOS 使用系统钥匙串，Windows 使用 DPAPI。更多边界说明和漏洞报告方式见 [SECURITY.md](SECURITY.md)。
 
 ## 本地构建
 
-需要 macOS Apple Silicon、带有效 Google 签名的 Antigravity **2.35.1 或 2.35.2**、Python 3.11+、Node.js 22.12+、Xcode Command Line Tools 和 `@electron/asar`。
+需要 Python 3.11+、Node.js 22.12+ 和 `@electron/asar`。macOS 构建还需要 Xcode Command Line Tools。
 
 1. 在仓库根目录运行 `npm install` 安装构建工具；也可使用已全局安装并在 `PATH` 中的 `asar`。
-2. 从 [Electron 44.9.1 官方发行页](https://github.com/electron/electron/releases/tag/v44.9.1)获取 `electron-v44.9.1-darwin-arm64.zip` 和 `SHASUMS256.txt`，放进 `build/source/`，将校验清单改名为 `electron-44.9.1-SHASUMS256.txt`。
-3. 运行：
+2. 从 [Electron 44.9.1 官方发行页](https://github.com/electron/electron/releases/tag/v44.9.1)获取对应平台的 Electron zip 和 `SHASUMS256.txt`，放进 `build/source/`，将校验清单改名为 `electron-44.9.1-SHASUMS256.txt`。
+3. 按平台运行下方命令。已有成品不会被覆盖；需要并排构建时，可用 `--output` 指定 `dist/` 下的其他输出路径。
 
-   ```sh
-   python3 scripts/build_app.py --source /Applications/Antigravity.app
-   ```
+### macOS Apple Silicon
 
-输出为 `dist/Antigravity Lab.app`。构建脚本校验原版应用签名和 Electron 压缩包，再对副本中的启动器及语言服务进行本地签名。已有成品不会被覆盖；需要并排构建时，可用 `--output` 指定 `dist/` 下的其他输出路径。
+需要 `/Applications/Antigravity.app` 中带有效 Google 签名的 Antigravity **2.35.1 或 2.35.2**：
+
+```sh
+python3 scripts/build_app.py --source /Applications/Antigravity.app
+```
+
+输出为 `dist/Antigravity Lab.app`。构建脚本校验原版应用签名和 Electron 压缩包，再对副本中的启动器及语言服务进行本地签名。
+
+### Windows x64
+
+需要 Windows x64 原版 Antigravity **2.35.1 或 2.35.2** 的安装目录。输出为免安装目录 `dist\Antigravity Lab\`：
+
+```powershell
+python scripts\build_app.py --source "$env:LOCALAPPDATA\Programs\antigravity"
+```
+
+Windows 信任链不以安装后的可执行文件 Authenticode 状态为依据：当前 2.35.1/2.35.2 安装后的 `Antigravity.exe`、`resources\bin\language_server.exe` 以及官方 Electron `electron.exe` 均被 Windows 报告为 `NotSigned`，即使官方 NSIS 安装包本身具有有效 Google LLC 签名。因此构建脚本将官方安装包提取出的核心输入文件 SHA-256 按版本登记在 `scripts/platform_windows.py` 中，构建时先严格核验 `--source` 内的 `resources\app.asar`、`resources\bin\language_server.exe`、`resources\elevate.exe`、`resources\app-update.yml` 以及 `resources\app.asar.unpacked` 的确定性树哈希，再核验应用版本和全部补丁锚点；任何一项不匹配都会停止。当前两个受支持版本的 `resources\bin\` 中没有其他关键脚本或可执行文件；若出现未登记文件，构建会拒绝继续。
+
+`--installer` 是可选的额外来源证明，只在显式传入时校验该 NSIS 安装包具有有效 Google LLC 签名且产品版本与输入目录一致；脚本不会扫描或猜测安装包位置：
+
+```powershell
+python scripts\build_app.py --source C:\path\to\antigravity --installer C:\path\to\Antigravity-x64.exe
+```
+
+语言服务副本的 PE Certificate Table 处理保持兼容：当前官方文件没有证书表时直接跳过；如果未来官方补签，脚本会剥离补丁后失效的尾部签名块并清零校验和。Windows 副本使用独立数据目录、Windows 凭据隔离、`agy-lab://` 回调、系统托盘入口，并将 Launcher 的 AppUserModelID 设置为 `com.local.agy-lab`。
 
 ### 可选：中文界面
 
@@ -50,7 +72,8 @@ python3 scripts/build_app.py --source /Applications/Antigravity.app --zh /path/t
 ### 验证与常见问题
 
 - `npm test` 运行自动化测试，不需要 Antigravity 安装包或真实账号。测试中的本地 HTTP 服务需要能访问 `127.0.0.1`。真实登录、界面和 Orchestrator 交接需手动验收。
-- **升级原版后构建失败**：本项目按受支持的版本及补丁锚点检查，不保证新版兼容。请使用支持的版本或等待对应适配，不要跳过校验。
+- `python -m unittest test.test_bundle_login_windows -v` 运行 Windows PE 补丁单元测试。
+- **升级原版后构建失败**：本项目按受支持的版本、输入哈希及补丁锚点检查，不保证新版兼容。请使用支持的版本或等待对应适配，不要跳过校验。
 - **macOS 提示应用无法验证**：Lab 是在本机构建、临时签名的副本，不是 Google 签名或 Apple 公证的发行版。先确认源文件和构建过程可信，再按 macOS 提示处理；不要关闭全局安全检查。
 
 ## 许可证
