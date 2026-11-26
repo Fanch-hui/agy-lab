@@ -26,8 +26,12 @@ function cacheKeyFor(connection) {
 // messages; other providers get the request as AGY built it.
 function cacheFor(connection, request, effort, stability) {
   const key = cacheKeyFor(connection);
-  // The subscription endpoint's acceptance of the other prefix measures is unverified.
-  if (connection.authType === 'siwc') return { request, cache: { key } };
+  // The subscription endpoint routes a conversation's calls to one cache through the
+  // `session-id` header; the prompt cache key alone lands them on random servers.
+  if (connection.authType === 'siwc') {
+    const session = request.sessionId ? `agy-lab-${digest(connection.id, connection.model, request.sessionId)}` : undefined;
+    return { request, cache: { key, session } };
+  }
   if (!stability || new URL(connection.baseUrl).origin !== OPENAI_ORIGIN ||
       !usesOpenAIResponses(connection, request, effort)) {
     return { request, cache: { key } };

@@ -237,6 +237,7 @@ async function generateResponses({ connection, request, signal, onChunk, reasoni
   const payload = requestFor(connection, request, reasoningEffort, cache);
   const headers = { 'content-type': 'application/json', accept: 'text/event-stream' };
   if (connection.apiKey) headers.authorization = `Bearer ${connection.apiKey}`;
+  if (isSiwc && cache?.session) headers['session-id'] = cache.session;
   const response = await postStream(url, {
     method: 'POST', headers, body: JSON.stringify(payload), signal, redirect: 'error',
   });

@@ -261,6 +261,9 @@ test('routes SIWC Responses with local reasoning replay and unchanged Google tra
     assert.equal(payload.prompt_cache_options, undefined);
   }
   assert.equal(sent[0].payload.prompt_cache_key, sent[1].payload.prompt_cache_key);
+  assert.match(sent[0].headers['session-id'], /^agy-lab-[0-9a-f]+$/);
+  assert.equal(sent[0].headers['session-id'], sent[1].headers['session-id']);
+  assert.doesNotMatch(sent[0].headers['session-id'], /s1/);
   assert.ok(sent[1].payload.input.some(item => item.type === 'reasoning' && item.encrypted_content === 'opaque-reasoning'));
   assert.ok(sent[1].payload.input.some(item => item.type === 'function_call_output' && item.call_id === 'call_a'));
   const official = { model: 'gemini-4-neon-low', request: { contents: [user] } };
