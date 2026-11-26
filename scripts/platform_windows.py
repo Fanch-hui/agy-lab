@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -90,10 +91,14 @@ def installer_metadata(installer):
         raise RuntimeError("PowerShell returned unrecognized installer signature metadata") from error
 
 
+def has_google_llc_subject(subject):
+    return re.search(r"(?:^|,\s*)O=Google LLC(?=,|$)", subject) is not None
+
+
 def validate_installer(installer, version):
     metadata = installer_metadata(installer)
     subject = metadata.get("Subject") or ""
-    if metadata.get("Status") != "Valid" or "O=Google LLC" not in subject:
+    if metadata.get("Status") != "Valid" or not has_google_llc_subject(subject):
         raise RuntimeError(
             "The Antigravity installer must have a valid Google LLC signature "
             f"(status={metadata.get('Status')!r}, subject={subject!r})"
