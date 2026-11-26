@@ -25,8 +25,10 @@ function cacheKeyFor(connection) {
 // Only the official OpenAI Responses API is known to accept `allowed_tools` and developer
 // messages; other providers get the request as AGY built it.
 function cacheFor(connection, request, effort, stability) {
-  if (connection.authType === 'siwc') return { request };
   const key = cacheKeyFor(connection);
+  // Without a key the subscription endpoint spreads one conversation over servers and hits only
+  // by chance; its acceptance of the other prefix measures is unverified, so it gets the key alone.
+  if (connection.authType === 'siwc') return { request, cache: { key } };
   if (!stability || new URL(connection.baseUrl).origin !== OPENAI_ORIGIN ||
       !usesOpenAIResponses(connection, request, effort)) {
     return { request, cache: { key } };

@@ -255,8 +255,10 @@ test('routes SIWC Responses with local reasoning replay and unchanged Google tra
     assert.equal(headers.authorization, 'Bearer test-oauth-token');
     assert.equal(headers['x-goog-api-client'], undefined);
     assert.equal(payload.instructions, 'You are AGY.');
-    assert.doesNotMatch(JSON.stringify(payload), /google-token|google-project|prompt_cache_key/);
+    assert.doesNotMatch(JSON.stringify(payload), /google-token|google-project/);
+    assert.match(payload.prompt_cache_key, /^agy-lab-[0-9a-f]+$/);
   }
+  assert.equal(sent[0].payload.prompt_cache_key, sent[1].payload.prompt_cache_key);
   assert.ok(sent[1].payload.input.some(item => item.type === 'reasoning' && item.encrypted_content === 'opaque-reasoning'));
   assert.ok(sent[1].payload.input.some(item => item.type === 'function_call_output' && item.call_id === 'call_a'));
   const official = { model: 'gemini-4-neon-low', request: { contents: [user] } };

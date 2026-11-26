@@ -148,7 +148,7 @@ function requestFor(connection, request, effort, cache = {}) {
   const input = inputFor(request);
   if (cache.systemUpdate) input.push({ role: 'developer', content: cache.systemUpdate });
   const tools = toolFields(request, cache.allowedTools);
-  if (connection.authType === 'siwc') return subscriptionRequest(connection, input, effort, tools);
+  if (connection.authType === 'siwc') return subscriptionRequest(connection, input, effort, tools, cache.key);
   const payload = {
     model: connection.model,
     input,
@@ -168,7 +168,7 @@ function requestFor(connection, request, effort, cache = {}) {
 
 // The ChatGPT subscription endpoint takes the system prompt as `instructions` and accepts no
 // output-token limit; reasoning replay and the single-call rule apply only when tools are sent.
-function subscriptionRequest(connection, input, effort, tools) {
+function subscriptionRequest(connection, input, effort, tools, cacheKey) {
   const payload = { model: connection.model };
   if (input[0]?.role === 'system') {
     const [system] = input.splice(0, 1);
@@ -177,6 +177,7 @@ function subscriptionRequest(connection, input, effort, tools) {
   }
   Object.assign(payload, { input, store: false, stream: true });
   if (effort) payload.reasoning = { effort };
+  if (cacheKey) payload.prompt_cache_key = cacheKey;
   if (tools.tools) {
     payload.parallel_tool_calls = false;
     payload.include = ['reasoning.encrypted_content'];
