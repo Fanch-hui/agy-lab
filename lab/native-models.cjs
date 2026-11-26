@@ -10,8 +10,19 @@ const { reasoningVariants } = require('./reasoning.cjs');
 const MODEL_PREFIX = 'agy-ext-';
 const SLOT_FIRST = 1200;
 const SLOT_LAST = 1650;
-const CONTEXT_TOKENS = 200000;
+// Defaults for a connection without its own context size. The language server compacts the
+// history before it reaches the declared window.
+const DEFAULT_CONTEXT_TOKENS = 512000;
+const MIN_CONTEXT_TOKENS = 8000;
+const MAX_CONTEXT_TOKENS = 10000000;
 const OUTPUT_TOKENS = 32768;
+// OpenAI lists 128K output for GPT-5 and later (GPT-6.2 Sol/Astra checked 2026-11-26).
+const GPT_OUTPUT_TOKENS = 128000;
+
+function outputTokensFor(connection, contextTokens) {
+  const limit = /^gpt-([5-9]|\d{2,})/i.test(connection.model) ? GPT_OUTPUT_TOKENS : OUTPUT_TOKENS;
+  return Math.min(limit, Math.floor(contextTokens / 2));
+}
 
 function groupId(connection) {
   return MODEL_PREFIX + connection.id.replace(/-/g, '').slice(0, 12);
@@ -29,11 +40,13 @@ function variantsFor(connection) {
   // from two providers apart.
   const label = `${connection.model} · ${connection.authType === 'siwc' ? 'ChatGPT 订阅' : new URL(connection.baseUrl).host}`;
   const efforts = reasoningVariants(connection).slice(1).map(option => option.effort);
-  if (!efforts.length) return { group, label, efforts, variants: [{ id: group, label, connectionId: connection.id }] };
+  const contextTokens = connection.contextTokens || DEFAULT_CONTEXT_TOKENS;
+  const base = { connectionId: connection.id, contextTokens, outputTokens: outputTokensFor(connection, contextTokens) };
+  if (!efforts.length) return { group, label, efforts, variants: [{ id: group, label, ...base }] };
   return {
     group, label, efforts,
     variants: efforts.map(effort => ({
-      id: `${group}-${effort}`, label: `${label} (${title(effort)})`, connectionId: connection.id, effort,
+      id: `${group}-${effort}`, label: `${label} (${title(effort)})`, ...base, effort,
     })),
   };
 }
@@ -87,8 +100,8 @@ function catalogueEntry(variant, slot) {
     supportsImages: false,
     supportsThinking: Boolean(variant.effort),
     recommended: true,
-    maxTokens: CONTEXT_TOKENS,
-    maxOutputTokens: OUTPUT_TOKENS,
+    maxTokens: variant.contextTokens,
+    maxOutputTokens: variant.outputTokens,
     quotaInfo: { remainingFraction: 1 },
   };
 }
@@ -136,4 +149,12 @@ function resolveVariant(modelId, connections) {
   return undefined;
 }
 
-module.exports = { MODEL_PREFIX, SlotTable, injectCatalogue, resolveVariant, variantsFor };
+// Returns a usable context size, or undefined when `value` is not one.
+function contextTokensOf(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= MIN_CONTEXT_TOKENS && number <= MAX_CONTEXT_TOKENS ? number : undefined;
+}
+
+module.exports = {
+  DEFAULT_CONTEXT_TOKENS, MODEL_PREFIX, SlotTable, contextTokensOf, injectCatalogue, resolveVariant, variantsFor,
+};

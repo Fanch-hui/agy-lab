@@ -24,7 +24,7 @@ test('discovers distinct model IDs with only the selected provider credential', 
     received = { path: request.url, headers: request.headers };
     response.setHeader('content-type', 'application/json');
     response.end(JSON.stringify({ data: [
-      { id: 'model-10' },
+      { id: 'model-10', context_length: 131072 },
       { id: 'model-2', supported_reasoning_efforts: ['none', 'high', 'unexpected', 'high'] },
       { id: 'model-10' }, { id: '' },
     ] }));
@@ -32,7 +32,7 @@ test('discovers distinct model IDs with only the selected provider credential', 
   const models = await discoverModels({ baseUrl, apiKey: 'provider-test-key' });
   assert.deepEqual(models, [
     { id: 'model-2', reasoningEfforts: ['none', 'high'] },
-    { id: 'model-10' },
+    { id: 'model-10', contextTokens: 131072 },
   ]);
   assert.equal(received.path, '/v1/models');
   assert.equal(received.headers.authorization, 'Bearer provider-test-key');
