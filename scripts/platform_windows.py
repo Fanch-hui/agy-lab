@@ -247,7 +247,7 @@ def build(source, archive, checksums, output, installer=None, zh_project=None):
         if installer is not None:
             validate_installer(installer, version)
 
-        staged = scratch / output.name
+        staged = scratch / f"{output.name}.staging"
         electron_extract = scratch / "electron"
         electron_extract.mkdir()
         extract_zip_safely(archive, electron_extract)
