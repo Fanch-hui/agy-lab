@@ -5,6 +5,9 @@ const { pathToFileURL } = require('node:url');
 const fs = require('node:fs');
 const { app, session, BrowserWindow, MenuItem, ipcMain, shell } = require('electron');
 require('./zh.cjs').enableChinese(app, session);
+// Runs before the language server starts, which reads these from the Lab's gemini directory.
+require('./shared-config.cjs').linkSharedConfig(
+  path.join(app.getPath('userData'), 'gemini'), path.join(require('node:os').homedir(), '.gemini'));
 const connections = require('./connections.cjs');
 const { generate } = require('./provider.cjs');
 const { probeTools } = require('./tool-probe.cjs');
