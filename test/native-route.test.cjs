@@ -57,17 +57,19 @@ test('adds each reasoning effort as a grouped model on an unused placeholder', c
   assert.equal(again.models[ids[0]].model, 'MODEL_PLACEHOLDER_M1201');
   assert.equal(again.models[ids[1]].model, 'MODEL_PLACEHOLDER_M1204');
   assert.equal(again.models[ids[2]].model, 'MODEL_PLACEHOLDER_M1203');
-  assert.equal(again.models[ids[0]].maxTokens, 512000);
+  // The host compacts at maxTokens - max(maxOutputTokens, 40000): that is the connection's size.
+  assert.equal(again.models[ids[0]].maxTokens, 512000 + 40000);
   assert.equal(again.models[ids[0]].maxOutputTokens, 32768);
 
   const small = injectCatalogue(officialCatalogue(), [{ ...connection, contextTokens: 32000 }], new SlotTable(file)).catalogue;
-  assert.equal(small.models[ids[0]].maxTokens, 32000);
+  assert.equal(small.models[ids[0]].maxTokens, 32000 + 40000);
   assert.equal(small.models[ids[0]].maxOutputTokens, 16000);
 
   const gpt = { ...connection, model: 'gpt-6.2-sol' };
   const gptIds = variantsFor(gpt).variants.map(variant => variant.id);
   const gptCatalogue = injectCatalogue(officialCatalogue(), [gpt], new SlotTable(file)).catalogue;
   assert.equal(gptCatalogue.models[gptIds[0]].maxOutputTokens, 128000);
+  assert.equal(gptCatalogue.models[gptIds[0]].maxTokens, 512000 + 128000);
 });
 
 test('conceals provider signatures and restores them for the provider', () => {

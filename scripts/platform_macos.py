@@ -13,6 +13,7 @@ from bundle_base import (
     SUPPORTED_VERSIONS, bundle_chinese, find_asar, install_lab, run,
     replace_once, sign_item, update_file, verified_electron_archive,
 )
+from bundle_context import patch_context_cap
 from bundle_login import patch_login
 from renderer_patch import patch_renderer
 
@@ -147,6 +148,7 @@ def build(source, archive, checksums, output, zh_project=None):
         make_launcher(staged, version)
         server = resources / "bin" / "language_server"
         patch_login(server)
+        patch_context_cap(server)
         renderer_source = patch_renderer(server)
         if zh_project is not None:
             bundle_chinese(zh_project, renderer_source, scratch, app_root)

@@ -10,12 +10,14 @@ const { reasoningVariants } = require('./reasoning.cjs');
 const MODEL_PREFIX = 'agy-ext-';
 const SLOT_FIRST = 1200;
 const SLOT_LAST = 1650;
-// Defaults for a connection without its own context size. The language server compacts the
-// history before it reaches the declared window.
+// A connection's context size is the point where the language server compacts the history.
+// The host compacts at maxTokens - max(maxOutputTokens, HOST_OUTPUT_RESERVE), so the catalogue
+// declares that much more. The macOS build lifts the host's 256K cap (scripts/bundle_context.py).
 const DEFAULT_CONTEXT_TOKENS = 512000;
 const MIN_CONTEXT_TOKENS = 8000;
 const MAX_CONTEXT_TOKENS = 10000000;
 const OUTPUT_TOKENS = 32768;
+const HOST_OUTPUT_RESERVE = 40000;
 // OpenAI lists 128K output for GPT-5 and later (GPT-6.2 Sol/Astra checked 2026-11-26).
 const GPT_OUTPUT_TOKENS = 128000;
 
@@ -100,7 +102,7 @@ function catalogueEntry(variant, slot) {
     supportsImages: false,
     supportsThinking: Boolean(variant.effort),
     recommended: true,
-    maxTokens: variant.contextTokens,
+    maxTokens: variant.contextTokens + Math.max(variant.outputTokens, HOST_OUTPUT_RESERVE),
     maxOutputTokens: variant.outputTokens,
     quotaInfo: { remainingFraction: 1 },
   };
