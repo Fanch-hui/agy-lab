@@ -1,8 +1,8 @@
 """Isolate the desktop language server's credential storage.
 
-The macOS 2.35.1 and 2.35.2 servers share the Mach-O layout byte for byte at
-every offset below. The Windows x64 servers for those versions likewise share
-the PE64 layout used by the Windows patch table.
+The macOS 2.35.1 and 2.35.2 servers share one Mach-O layout; 2.36.0 has its
+own. The Windows x64 2.35.1 and 2.35.2 servers share the PE64 layout used by
+the Windows patch table.
 """
 
 from dataclasses import dataclass
@@ -10,27 +10,71 @@ from pathlib import Path
 import plistlib
 import struct
 
-from bundle_base import SUPPORTED_VERSIONS
-
-
 IMAGE_BASE = 0x100000000
-ACCOUNT_OFFSET = 0x789D590
-FALLBACK_OFFSET = ACCOUNT_OFFSET + 12
-PLUGIN_OFFSET = FALLBACK_OFFSET + 9
 STORAGE_LITERALS = b"agy-lab-001\0.agy-lab\0agy-lab-001.plugins\0"
+
+
+@dataclass(frozen=True)
+class MacLoad:
+    offset: int
+    expected_hex: str
+    register: int
+    literal: str
+    length_register: int | None = None
+
+
+@dataclass(frozen=True)
+class MacLayout:
+    cave_offset: int
+    native_account_offset: int
+    native_fallback_offset: int
+    native_plugin_offset: int
+    loads: tuple[MacLoad, ...]
+
 
 # These instruction sequences load storage names only. The adjacent length
 # operands stay unchanged except for the seven-to-eight character fallback dir.
-LOADS = (
-    (0x27FA254, "437000d063082f91610180d2", 3, ACCOUNT_OFFSET, None),
-    (0x2416818, "638c00f063142591e40b40b2", 3, FALLBACK_OFFSET, 4),
-    (0x23EB530, "c58d00d0a5142591e60b40b2", 5, FALLBACK_OFFSET, 6),
-    (0x0DA81D4, "e342019063082f91640180d2", 3, ACCOUNT_OFFSET, None),
-    (0x0DA9288, "c34201f063082f91640180d2", 3, ACCOUNT_OFFSET, None),
-    (0x0DA76EC, "2248019042482191630280d2", 2, PLUGIN_OFFSET, None),
-    (0x0DA7740, "2448019084482191650280d2", 4, PLUGIN_OFFSET, None),
-    (0x0DA779C, "2248019042482191630280d2", 2, PLUGIN_OFFSET, None),
+MACOS_2_35 = MacLayout(
+    cave_offset=0x789D590,
+    native_account_offset=0x3604BC2,
+    native_fallback_offset=0x35A5945,
+    native_plugin_offset=0x36AB852,
+    loads=(
+        MacLoad(0x27FA254, "437000d063082f91610180d2", 3, "account"),
+        MacLoad(0x2416818, "638c00f063142591e40b40b2", 3, "fallback", 4),
+        MacLoad(0x23EB530, "c58d00d0a5142591e60b40b2", 5, "fallback", 6),
+        MacLoad(0x0DA81D4, "e342019063082f91640180d2", 3, "account"),
+        MacLoad(0x0DA9288, "c34201f063082f91640180d2", 3, "account"),
+        MacLoad(0x0DA76EC, "2248019042482191630280d2", 2, "plugin"),
+        MacLoad(0x0DA7740, "2448019084482191650280d2", 4, "plugin"),
+        MacLoad(0x0DA779C, "2248019042482191630280d2", 2, "plugin"),
+    ),
 )
+
+# The 2.36.0 cave is the zero padding after __eh_frame at the end of __TEXT;
+# the 2.35 gap between __cstring and __const shrank to 32 bytes.
+MACOS_2_36 = MacLayout(
+    cave_offset=0x7AC3D40,
+    native_account_offset=0x3562232,
+    native_fallback_offset=0x3502B12,
+    native_plugin_offset=0x360A380,
+    loads=(
+        MacLoad(0x296B184, "a35f00f063c80891610180d2", 3, "account"),
+        MacLoad(0x25D5228, "637900b063482c91e40b40b2", 3, "fallback", 4),
+        MacLoad(0x25A31C0, "e57a00f0a5482c91e60b40b2", 5, "fallback", 6),
+        MacLoad(0x0EA51E4, "e33501b063c80891640180d2", 3, "account"),
+        MacLoad(0x0EA6298, "e335019063c80891640180d2", 3, "account"),
+        MacLoad(0x0EA46FC, "223b01d042000e91630280d2", 2, "plugin"),
+        MacLoad(0x0EA4750, "243b01d084000e91650280d2", 4, "plugin"),
+        MacLoad(0x0EA47AC, "223b01d042000e91630280d2", 2, "plugin"),
+    ),
+)
+
+MACOS_LAYOUTS = {
+    "2.35.1": MACOS_2_35,
+    "2.35.2": MACOS_2_35,
+    "2.36.0": MACOS_2_36,
+}
 
 
 @dataclass(frozen=True)
@@ -110,6 +154,11 @@ WINDOWS_X64_LAYOUT = WindowsLayout(
     ),
 )
 
+WINDOWS_X64_LAYOUTS = {
+    "2.35.1": WINDOWS_X64_LAYOUT,
+    "2.35.2": WINDOWS_X64_LAYOUT,
+}
+
 
 class PE64Image:
     def __init__(self, stream):
@@ -180,38 +229,51 @@ def _load_address(instruction_offset, target_offset, register):
     return struct.pack("<II", adrp, add)
 
 
+def _macos_literal_targets(layout):
+    return {
+        "account": layout.cave_offset,
+        "fallback": layout.cave_offset + 12,
+        "plugin": layout.cave_offset + 21,
+    }
+
+
 def _patch_macos(binary):
     contents = binary.parent.parent.parent
     with (contents / "Info.plist").open("rb") as stream:
         version = plistlib.load(stream).get("CFBundleShortVersionString")
-    if version not in SUPPORTED_VERSIONS:
+    if version not in MACOS_LAYOUTS:
         raise ValueError(f"unsupported language server version: {version!r}")
+    layout = MACOS_LAYOUTS[version]
 
     with binary.open("r+b") as stream:
         header = stream.read(8)
         if header != bytes.fromhex("cffaedfe0c000001"):
             raise ValueError("expected an ARM64 Mach-O language server")
-        stream.seek(ACCOUNT_OFFSET - 1)
+        stream.seek(layout.cave_offset - 1)
         if stream.read(49) != bytes(49):
             raise ValueError("credential storage literal region is not empty")
-        stream.seek(0x3604BC2)
-        if stream.read(11) != b"antigravity":
-            raise ValueError("unexpected native credential storage name")
-        stream.seek(0x36AB852)
-        if stream.read(19) != b"antigravity.plugins":
-            raise ValueError("unexpected native plugin storage name")
-        for offset, expected, _, _, _ in LOADS:
+        native_literals = (
+            (layout.native_account_offset, b"antigravity", "native credential storage name"),
+            (layout.native_fallback_offset, b".gemini", "native credential fallback directory"),
+            (layout.native_plugin_offset, b"antigravity.plugins", "native plugin storage name"),
+        )
+        for offset, expected, description in native_literals:
             stream.seek(offset)
-            if stream.read(12) != bytes.fromhex(expected):
-                raise ValueError(f"unsupported credential storage code at {offset:#x}")
+            if stream.read(len(expected)) != expected:
+                raise ValueError(f"unexpected {description}")
+        for load in layout.loads:
+            stream.seek(load.offset)
+            if stream.read(12) != bytes.fromhex(load.expected_hex):
+                raise ValueError(f"unsupported credential storage code at {load.offset:#x}")
 
-        stream.seek(ACCOUNT_OFFSET)
+        stream.seek(layout.cave_offset)
         stream.write(STORAGE_LITERALS)
-        for offset, _, register, literal_offset, length_register in LOADS:
-            stream.seek(offset)
-            stream.write(_load_address(offset, literal_offset, register))
-            if length_register is not None:
-                stream.write(struct.pack("<I", 0xD2800100 | length_register))
+        targets = _macos_literal_targets(layout)
+        for load in layout.loads:
+            stream.seek(load.offset)
+            stream.write(_load_address(load.offset, targets[load.literal], load.register))
+            if load.length_register is not None:
+                stream.write(struct.pack("<I", 0xD2800100 | load.length_register))
 
 
 def _windows_targets(layout):
@@ -222,9 +284,11 @@ def _windows_targets(layout):
     }
 
 
-def _patch_windows_x64(binary, version, layout=WINDOWS_X64_LAYOUT):
-    if version not in SUPPORTED_VERSIONS:
+def _patch_windows_x64(binary, version, layout=None):
+    if version not in WINDOWS_X64_LAYOUTS:
         raise ValueError(f"unsupported language server version: {version!r}")
+    if layout is None:
+        layout = WINDOWS_X64_LAYOUTS[version]
     with binary.open("r+b") as stream:
         pe = PE64Image(stream)
         if pe.read_rva(layout.cave_rva - 1, 49) != bytes(49):

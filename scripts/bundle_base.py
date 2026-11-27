@@ -13,8 +13,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CHECKSUMS = PROJECT_ROOT / "build" / "source" / "electron-44.9.1-SHASUMS256.txt"
 # Visible name only: the profile, keychain entries and URL scheme keep the "AGY Lab" identity.
 DISPLAY_NAME = "Antigravity Lab"
-# Each version listed here has been checked against every build-time patch anchor.
-SUPPORTED_VERSIONS = ("2.35.1", "2.35.2")
 BUNDLE_ID = "com.local.agy-lab"
 OFFICIAL_REQUIREMENT = (
     '=identifier "com.google.antigravity" and anchor apple generic '

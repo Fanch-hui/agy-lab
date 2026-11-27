@@ -10,11 +10,11 @@ from pathlib import Path
 
 from bundle_base import (
     BUNDLE_ID, DEFAULT_CHECKSUMS, DISPLAY_NAME, OFFICIAL_REQUIREMENT, PROJECT_ROOT,
-    SUPPORTED_VERSIONS, bundle_chinese, find_asar, install_lab, run,
+    bundle_chinese, find_asar, install_lab, run,
     replace_once, sign_item, update_file, verified_electron_archive,
 )
 from bundle_context import patch_context_cap
-from bundle_login import patch_login
+from bundle_login import MACOS_LAYOUTS, patch_login
 from renderer_patch import patch_renderer
 
 
@@ -115,8 +115,8 @@ def build(source, archive, checksums, output, zh_project=None):
     with (source / "Contents" / "Info.plist").open("rb") as stream:
         source_info = plistlib.load(stream)
     version = source_info.get("CFBundleShortVersionString")
-    if version not in SUPPORTED_VERSIONS:
-        raise RuntimeError(f"Unsupported Antigravity {version}; expected one of {', '.join(SUPPORTED_VERSIONS)}")
+    if version not in MACOS_LAYOUTS:
+        raise RuntimeError(f"Unsupported Antigravity {version}; expected one of {', '.join(MACOS_LAYOUTS)}")
     run("codesign", "--verify", "--deep", "--strict", "-R", OFFICIAL_REQUIREMENT, source)
     original_resources = source / "Contents" / "Resources"
     original_server = original_resources / "bin" / "language_server"

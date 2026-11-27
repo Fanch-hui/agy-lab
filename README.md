@@ -33,7 +33,7 @@ API Key 和 ChatGPT OAuth 凭据由 Electron `safeStorage` 加密后保存在 La
 
 ### macOS Apple Silicon
 
-需要 `/Applications/Antigravity.app` 中带有效 Google 签名的 Antigravity **2.35.1 或 2.35.2**：
+需要 `/Applications/Antigravity.app` 中带有效 Google 签名的 Antigravity **2.35.1、2.35.2 或 2.36.0**：
 
 ```sh
 python3 scripts/build_app.py --source /Applications/Antigravity.app

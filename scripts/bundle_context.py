@@ -5,17 +5,15 @@ import plistlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from bundle_base import SUPPORTED_VERSIONS
 from bundle_login import PE64Image
 
 
-# utils.GetCheckpointConfig, Google-provider branch (2.35.1 and 2.35.2 share these bytes):
+# utils.GetCheckpointConfig, Google-provider branch (these bytes are shared, with 2.36.0 at its own offset):
 #   mov x4, #256000 ; cmp w3, w4 ; mov x4, #256000 ; csel x3, x3, x4, lo
 # where w3 = maxTokens - max(maxOutputTokens, 40000). Replacing the csel with a nop keeps w3,
 # so the compaction point follows the catalogue entry; Lab bounds maxTokens itself.
-MACOS_CAP_OFFSET = 0x1468994
+MACOS_CAP_OFFSETS = {"2.35.1": 0x1468994, "2.35.2": 0x1468994, "2.36.0": 0x157B254}
 MACOS_CAP_CODE = bytes.fromhex("04009dd26400a0f27f00046b04009dd26400a0f26330849a")
-MACOS_CSEL_OFFSET = MACOS_CAP_OFFSET + 20
 ARM64_NOP = bytes.fromhex("1f2003d5")
 # mov esi, edx ; nop: the x64 cmovb selects into esi, unlike the ARM64 csel
 # whose destination already contains the uncapped value. An unconditional copy
@@ -64,15 +62,16 @@ WINDOWS_X64_CAP_PATCHES = {
 def _patch_macos(binary):
     with (binary.parent.parent.parent / "Info.plist").open("rb") as stream:
         version = plistlib.load(stream).get("CFBundleShortVersionString")
-    if version not in SUPPORTED_VERSIONS:
+    if version not in MACOS_CAP_OFFSETS:
         raise ValueError(f"unsupported language server version: {version!r}")
+    cap_offset = MACOS_CAP_OFFSETS[version]
     with binary.open("r+b") as stream:
         if stream.read(8) != bytes.fromhex("cffaedfe0c000001"):
             raise ValueError("expected an ARM64 Mach-O language server")
-        stream.seek(MACOS_CAP_OFFSET)
+        stream.seek(cap_offset)
         if stream.read(len(MACOS_CAP_CODE)) != MACOS_CAP_CODE:
-            raise ValueError(f"unsupported checkpoint cap code at {MACOS_CAP_OFFSET:#x}")
-        stream.seek(MACOS_CSEL_OFFSET)
+            raise ValueError(f"unsupported checkpoint cap code at {cap_offset:#x}")
+        stream.seek(cap_offset + 20)
         stream.write(ARM64_NOP)
 
 
