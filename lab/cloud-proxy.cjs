@@ -3,6 +3,7 @@
 // Local pass-through in front of the Cloud Code endpoint used by the main language server.
 // Requests are forwarded to the official endpoint unchanged. The inventory sees request and
 // response bodies only to record their structure; header values are never passed to it.
+const { randomUUID } = require('node:crypto');
 const http = require('node:http');
 const https = require('node:https');
 const path = require('node:path');
@@ -125,6 +126,23 @@ function forward({ upstream, agent, inventory }, request, response, body, model,
   outgoing.end(body);
 }
 
+const probes = new Map();
+
+function expectProbe() {
+  const probePath = '/agy-lab-wsl-probe/' + randomUUID();
+  const state = { arrived: false };
+  probes.set(probePath, state);
+  return {
+    path: probePath,
+    seen() {
+      return state.arrived;
+    },
+    cancel() {
+      probes.delete(probePath);
+    },
+  };
+}
+
 // `external` optionally serves generations for external models and extends the catalogue:
 // { matches(model), handle(envelope, response), rewriteCatalogue(catalogue) }.
 async function startCloudProxy({ upstream, inventoryFile, external }) {
@@ -134,6 +152,13 @@ async function startCloudProxy({ upstream, inventoryFile, external }) {
   const agent = new (upstreamUrl.protocol === 'https:' ? https : http).Agent({ keepAlive: true });
   const context = { upstream: upstreamUrl, agent, inventory };
   const server = http.createServer(async (request, response) => {
+    if (probes.has(request.url)) {
+      probes.get(request.url).arrived = true;
+      probes.delete(request.url);
+      response.writeHead(204);
+      response.end();
+      return;
+    }
     let body;
     try {
       body = await readBody(request);
@@ -219,4 +244,4 @@ async function cloudEndpoint(officialEndpoint) {
   return (await shared).url;
 }
 
-module.exports = { startCloudProxy, cloudEndpoint, inventoryPath };
+module.exports = { startCloudProxy, cloudEndpoint, expectProbe, inventoryPath };

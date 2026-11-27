@@ -18,6 +18,7 @@ from bundle_base import (
 )
 from bundle_context import patch_context_cap
 from bundle_login import patch_login, strip_pe_signature
+from bundle_wsl import WSL_SERVER_NAME, WSL_SERVER_SHA256, patch_wsl_server
 from renderer_patch import patch_renderer
 
 
@@ -151,6 +152,22 @@ def identify_verified_source(source):
     return version
 
 
+def bundle_wsl_server(wsl_server, version, resources, app_root):
+    if version not in WSL_SERVER_SHA256:
+        raise RuntimeError(f"WSL is not supported for Antigravity {version}")
+    expected = WSL_SERVER_SHA256[version]
+    actual = sha256_file(wsl_server)
+    if actual != expected:
+        raise RuntimeError(f"WSL language server SHA-256 mismatch: expected {expected}, found {actual}")
+    target = resources / "bin" / WSL_SERVER_NAME
+    shutil.copy2(wsl_server, target)
+    patch_wsl_server(target, version)
+    patch_renderer(target)
+    metadata = {"sha256": sha256_file(target)}
+    metadata_file = app_root / "dist" / "lab" / "wsl-server.json"
+    metadata_file.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+
+
 def extract_zip_safely(archive, destination):
     destination = destination.resolve()
     with zipfile.ZipFile(archive) as zip_file:
@@ -182,7 +199,7 @@ def read_app_version(app_root):
     return package.get("version")
 
 
-def build(source, archive, checksums, output, installer=None, zh_project=None):
+def build(source, archive, checksums, output, installer=None, zh_project=None, wsl_server=None):
     source = source.resolve(strict=True)
     archive = archive.resolve(strict=True)
     checksums = checksums.resolve(strict=True)
@@ -191,6 +208,8 @@ def build(source, archive, checksums, output, installer=None, zh_project=None):
         installer = installer.resolve(strict=True)
     if zh_project is not None:
         zh_project = zh_project.resolve(strict=True)
+    if wsl_server is not None:
+        wsl_server = wsl_server.resolve(strict=True)
     dist = (PROJECT_ROOT / "dist").resolve()
     if not output.is_relative_to(dist):
         raise RuntimeError("The preview directory must be built inside the project's dist directory")
@@ -240,6 +259,8 @@ def build(source, archive, checksums, output, installer=None, zh_project=None):
         shutil.copy2(original_server, resources / "bin" / "language_server.exe")
 
         install_lab(app_root, PROJECT_ROOT / "lab")
+        if wsl_server is not None:
+            bundle_wsl_server(wsl_server, version, resources, app_root)
         package_file = app_root / "package.json"
         package = json.loads(package_file.read_text(encoding="utf-8"))
         package["productName"] = "AGY Lab"
@@ -269,6 +290,10 @@ def main():
         help="optional official Antigravity Windows installer whose Google LLC signature is also verified",
     )
     parser.add_argument("--zh", type=Path, help="antigravity-zh checkout whose Chinese UI is built into the copy")
+    parser.add_argument(
+        "--wsl-server", type=Path,
+        help="official Linux x64 language server of the same version; enables WSL workspaces",
+    )
     arguments = parser.parse_args()
     build(
         arguments.source,
@@ -277,6 +302,7 @@ def main():
         arguments.output,
         arguments.installer,
         arguments.zh,
+        arguments.wsl_server,
     )
 
 

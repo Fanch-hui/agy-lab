@@ -23,7 +23,7 @@ WINDOWS_TARGET_FUNCTION = "google3/third_party/jetski/cortex/utils/utils.GetChec
 
 
 @dataclass(frozen=True)
-class WindowsContextCapPatch:
+class X64ContextCapPatch:
     sequence_rva: int
     sequence_hex: str
     cap_rva: int
@@ -44,19 +44,19 @@ WINDOWS_CAP_SEQUENCE = "8b54244c81fa00e80300be00e803000f42f289742450"
 WINDOWS_CAP_RVA = 0x183816D
 WINDOWS_CAP_ORIGINAL = "0f42f2"
 WINDOWS_X64_CAP_PATCHES = {
-    "2.35.1": WindowsContextCapPatch(
+    "2.35.1": X64ContextCapPatch(
         sequence_rva=WINDOWS_CAP_SEQUENCE_RVA,
         sequence_hex=WINDOWS_CAP_SEQUENCE,
         cap_rva=WINDOWS_CAP_RVA,
         original_hex=WINDOWS_CAP_ORIGINAL,
     ),
-    "2.35.2": WindowsContextCapPatch(
+    "2.35.2": X64ContextCapPatch(
         sequence_rva=WINDOWS_CAP_SEQUENCE_RVA,
         sequence_hex=WINDOWS_CAP_SEQUENCE,
         cap_rva=WINDOWS_CAP_RVA,
         original_hex=WINDOWS_CAP_ORIGINAL,
     ),
-    "2.36.0": WindowsContextCapPatch(
+    "2.36.0": X64ContextCapPatch(
         sequence_rva=0x19C709E,
         sequence_hex=WINDOWS_CAP_SEQUENCE,
         cap_rva=0x19C70AD,
@@ -81,11 +81,7 @@ def _patch_macos(binary):
         stream.write(ARM64_NOP)
 
 
-def _patch_windows_x64(binary, version, patch=None):
-    if version not in WINDOWS_X64_CAP_PATCHES:
-        raise ValueError(f"unsupported language server version for Windows x64 context cap patch: {version!r}")
-    if patch is None:
-        patch = WINDOWS_X64_CAP_PATCHES[version]
+def patch_x64_cap(image, patch, function_name):
     sequence = bytes.fromhex(patch.sequence_hex)
     original = bytes.fromhex(patch.original_hex)
     if len(original) != len(X64_CAP_REPLACEMENT):
@@ -93,17 +89,20 @@ def _patch_windows_x64(binary, version, patch=None):
     sequence_offset = patch.cap_rva - patch.sequence_rva
     if sequence[sequence_offset:sequence_offset + len(original)] != original:
         raise ValueError("internal Windows context cap sequence does not contain the recorded original bytes")
+    if image.read_rva(patch.sequence_rva, len(sequence)) != sequence:
+        raise ValueError(f"unsupported checkpoint cap code at {patch.sequence_rva:#x} in {function_name}")
+    if image.read_rva(patch.cap_rva, len(original)) != original:
+        raise ValueError(f"unsupported checkpoint cap instruction at {patch.cap_rva:#x} in {function_name}")
+    image.write_rva(patch.cap_rva, X64_CAP_REPLACEMENT)
+
+
+def _patch_windows_x64(binary, version, patch=None):
+    if version not in WINDOWS_X64_CAP_PATCHES:
+        raise ValueError(f"unsupported language server version for Windows x64 context cap patch: {version!r}")
+    if patch is None:
+        patch = WINDOWS_X64_CAP_PATCHES[version]
     with binary.open("r+b") as stream:
-        pe = PE64Image(stream)
-        if pe.read_rva(patch.sequence_rva, len(sequence)) != sequence:
-            raise ValueError(
-                f"unsupported checkpoint cap code at {patch.sequence_rva:#x} in {WINDOWS_TARGET_FUNCTION}"
-            )
-        if pe.read_rva(patch.cap_rva, len(original)) != original:
-            raise ValueError(
-                f"unsupported checkpoint cap instruction at {patch.cap_rva:#x} in {WINDOWS_TARGET_FUNCTION}"
-            )
-        pe.write_rva(patch.cap_rva, X64_CAP_REPLACEMENT)
+        patch_x64_cap(PE64Image(stream), patch, WINDOWS_TARGET_FUNCTION)
 
 
 def patch_context_cap(binary_path, platform=None, arch=None, version=None):

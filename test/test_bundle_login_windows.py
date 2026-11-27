@@ -11,9 +11,9 @@ from bundle_login import (  # noqa: E402
     STORAGE_LITERALS,
     WINDOWS_X64_2_35,
     WINDOWS_X64_LAYOUTS,
-    WindowsLayout,
-    WindowsLeaPatch,
-    WindowsLengthPatch,
+    X64Layout,
+    X64LeaPatch,
+    X64LengthPatch,
     _patch_windows_x64,
     strip_pe_signature,
 )
@@ -67,12 +67,12 @@ def synthetic_layout():
     fallback = 0x3020
     plugin = 0x3030
     loads = (
-        WindowsLeaPatch(0x1010, lea(account, 0x1010).hex(), "account", "synthetic.account"),
-        WindowsLeaPatch(0x1020, lea(fallback, 0x1020).hex(), "fallback", "synthetic.fallback"),
-        WindowsLeaPatch(0x1030, lea(plugin, 0x1030).hex(), "plugin", "synthetic.plugin"),
+        X64LeaPatch(0x1010, lea(account, 0x1010).hex(), "account", "synthetic.account"),
+        X64LeaPatch(0x1020, lea(fallback, 0x1020).hex(), "fallback", "synthetic.fallback"),
+        X64LeaPatch(0x1030, lea(plugin, 0x1030).hex(), "plugin", "synthetic.plugin"),
     )
-    length = WindowsLengthPatch(0x1040, "48c744245007000000", 5, "synthetic.length")
-    return WindowsLayout(
+    length = X64LengthPatch(0x1040, "48c744245007000000", 5, "synthetic.length")
+    return X64Layout(
         cave_rva=0x3080,
         account_rva=0x3080,
         fallback_rva=0x308C,
@@ -161,7 +161,7 @@ class WindowsPEPatchTest(unittest.TestCase):
         anchors = [patch for patch in layout.loads if patch.function == "authclient.NewAuthClient"]
         self.assertEqual(
             anchors,
-            [WindowsLeaPatch(0x30508F7, "488d15609ed900", "account", "authclient.NewAuthClient")],
+            [X64LeaPatch(0x30508F7, "488d15609ed900", "account", "authclient.NewAuthClient")],
         )
         self.assertEqual(len(layout.loads), 12)
         self.assertEqual(len(layout.length_loads), 2)

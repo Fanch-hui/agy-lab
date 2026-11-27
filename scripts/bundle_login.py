@@ -78,7 +78,7 @@ MACOS_LAYOUTS = {
 
 
 @dataclass(frozen=True)
-class WindowsLeaPatch:
+class X64LeaPatch:
     rva: int
     expected_hex: str
     literal: str
@@ -86,7 +86,7 @@ class WindowsLeaPatch:
 
 
 @dataclass(frozen=True)
-class WindowsLengthPatch:
+class X64LengthPatch:
     rva: int
     expected_hex: str
     immediate_offset: int
@@ -94,7 +94,7 @@ class WindowsLengthPatch:
 
 
 @dataclass(frozen=True)
-class WindowsLayout:
+class X64Layout:
     cave_rva: int
     account_rva: int
     fallback_rva: int
@@ -102,13 +102,13 @@ class WindowsLayout:
     original_account_rva: int
     original_fallback_rva: int
     original_plugin_rva: int
-    loads: tuple[WindowsLeaPatch, ...]
-    length_loads: tuple[WindowsLengthPatch, ...]
+    loads: tuple[X64LeaPatch, ...]
+    length_loads: tuple[X64LengthPatch, ...]
 
 
 # File offset 0x4dd3260 / RVA 0x4dd4a60 is inside a long zero-filled alignment
 # region in .rdata in both supported Windows x64 language servers.
-WINDOWS_X64_2_35 = WindowsLayout(
+WINDOWS_X64_2_35 = X64Layout(
     cave_rva=0x4DD4A60,
     account_rva=0x4DD4A60,
     fallback_rva=0x4DD4A6C,
@@ -117,27 +117,27 @@ WINDOWS_X64_2_35 = WindowsLayout(
     original_fallback_rva=0x3D8B201,
     original_plugin_rva=0x3E92D39,
     loads=(
-        WindowsLeaPatch(0x30508F7, "488d15609ed900", "account", "authclient.NewAuthClient"),
-        WindowsLeaPatch(0x10533E6, "488d157173d902", "account", "authstore.pluginFallbackPath"),
-        WindowsLeaPatch(0x1054611, "488d154661d902", "account", "authstore.scopeFilePath"),
-        WindowsLeaPatch(0x2B1FF59, "488d15a1b22601", "fallback", "codeassistclient.DefaultKeyringMarkerPath"),
-        WindowsLeaPatch(0x2B532A6, "488d15547f2301", "fallback", "codeassistclient.NewFileTokenStorage"),
-        WindowsLeaPatch(0x1052753, "488d0ddf05e402", "plugin", "authstore.pluginKeychain.Get"),
-        WindowsLeaPatch(0x10527B8, "488d357a05e402", "plugin", "authstore.pluginKeychain.Set"),
-        WindowsLeaPatch(0x1052813, "488d0d1f05e402", "plugin", "authstore.pluginKeychain.Delete"),
-        WindowsLeaPatch(0x1053039, "488d1df9fce302", "plugin", "authstore.keychainAvailable"),
-        WindowsLeaPatch(0x1055CBE, "488d0d74d0e302", "plugin", "authstore.(*pluginKeychain).Delete"),
-        WindowsLeaPatch(0x1055D1E, "488d0d14d0e302", "plugin", "authstore.(*pluginKeychain).Get"),
-        WindowsLeaPatch(0x1055D89, "488d35a9cfe302", "plugin", "authstore.(*pluginKeychain).Set"),
+        X64LeaPatch(0x30508F7, "488d15609ed900", "account", "authclient.NewAuthClient"),
+        X64LeaPatch(0x10533E6, "488d157173d902", "account", "authstore.pluginFallbackPath"),
+        X64LeaPatch(0x1054611, "488d154661d902", "account", "authstore.scopeFilePath"),
+        X64LeaPatch(0x2B1FF59, "488d15a1b22601", "fallback", "codeassistclient.DefaultKeyringMarkerPath"),
+        X64LeaPatch(0x2B532A6, "488d15547f2301", "fallback", "codeassistclient.NewFileTokenStorage"),
+        X64LeaPatch(0x1052753, "488d0ddf05e402", "plugin", "authstore.pluginKeychain.Get"),
+        X64LeaPatch(0x10527B8, "488d357a05e402", "plugin", "authstore.pluginKeychain.Set"),
+        X64LeaPatch(0x1052813, "488d0d1f05e402", "plugin", "authstore.pluginKeychain.Delete"),
+        X64LeaPatch(0x1053039, "488d1df9fce302", "plugin", "authstore.keychainAvailable"),
+        X64LeaPatch(0x1055CBE, "488d0d74d0e302", "plugin", "authstore.(*pluginKeychain).Delete"),
+        X64LeaPatch(0x1055D1E, "488d0d14d0e302", "plugin", "authstore.(*pluginKeychain).Get"),
+        X64LeaPatch(0x1055D89, "488d35a9cfe302", "plugin", "authstore.(*pluginKeychain).Set"),
     ),
     length_loads=(
-        WindowsLengthPatch(
+        X64LengthPatch(
             0x2B1FF4D,
             "48c78424b000000007000000",
             8,
             "codeassistclient.DefaultKeyringMarkerPath",
         ),
-        WindowsLengthPatch(
+        X64LengthPatch(
             0x2B5329D,
             "48c744245007000000",
             5,
@@ -150,7 +150,7 @@ WINDOWS_X64_2_35 = WindowsLayout(
 # (ends at file offset 0x3B0) and SizeOfHeaders (0x600), which the loader maps
 # read-only at the image base; the long zero run in .rdata is a real zero-valued
 # Go object (referenced by mldsa signing), not padding.
-WINDOWS_X64_2_36 = WindowsLayout(
+WINDOWS_X64_2_36 = X64Layout(
     cave_rva=0x400,
     account_rva=0x400,
     fallback_rva=0x40C,
@@ -159,27 +159,27 @@ WINDOWS_X64_2_36 = WindowsLayout(
     original_fallback_rva=0x3FDE340,
     original_plugin_rva=0x40E7936,
     loads=(
-        WindowsLeaPatch(0x3213057, "488d1506ade200", "account", "authclient.NewAuthClient"),
-        WindowsLeaPatch(0x11C8646, "488d151757e702", "account", "authstore.pluginFallbackPath"),
-        WindowsLeaPatch(0x11C9871, "488d15ec44e702", "account", "authstore.scopeFilePath"),
-        WindowsLeaPatch(0x2D69E39, "488d1500452701", "fallback", "codeassistclient.DefaultKeyringMarkerPath"),
-        WindowsLeaPatch(0x2DA5CC6, "488d1573862301", "fallback", "codeassistclient.NewFileTokenStorage"),
-        WindowsLeaPatch(0x11C79B3, "488d0d7cfff102", "plugin", "authstore.pluginKeychain.Get"),
-        WindowsLeaPatch(0x11C7A18, "488d3517fff102", "plugin", "authstore.pluginKeychain.Set"),
-        WindowsLeaPatch(0x11C7A73, "488d0dbcfef102", "plugin", "authstore.pluginKeychain.Delete"),
-        WindowsLeaPatch(0x11C8299, "488d1d96f6f102", "plugin", "authstore.keychainAvailable"),
-        WindowsLeaPatch(0x11CAF1E, "488d0d11caf102", "plugin", "authstore.(*pluginKeychain).Delete"),
-        WindowsLeaPatch(0x11CAF7E, "488d0db1c9f102", "plugin", "authstore.(*pluginKeychain).Get"),
-        WindowsLeaPatch(0x11CAFE9, "488d3546c9f102", "plugin", "authstore.(*pluginKeychain).Set"),
+        X64LeaPatch(0x3213057, "488d1506ade200", "account", "authclient.NewAuthClient"),
+        X64LeaPatch(0x11C8646, "488d151757e702", "account", "authstore.pluginFallbackPath"),
+        X64LeaPatch(0x11C9871, "488d15ec44e702", "account", "authstore.scopeFilePath"),
+        X64LeaPatch(0x2D69E39, "488d1500452701", "fallback", "codeassistclient.DefaultKeyringMarkerPath"),
+        X64LeaPatch(0x2DA5CC6, "488d1573862301", "fallback", "codeassistclient.NewFileTokenStorage"),
+        X64LeaPatch(0x11C79B3, "488d0d7cfff102", "plugin", "authstore.pluginKeychain.Get"),
+        X64LeaPatch(0x11C7A18, "488d3517fff102", "plugin", "authstore.pluginKeychain.Set"),
+        X64LeaPatch(0x11C7A73, "488d0dbcfef102", "plugin", "authstore.pluginKeychain.Delete"),
+        X64LeaPatch(0x11C8299, "488d1d96f6f102", "plugin", "authstore.keychainAvailable"),
+        X64LeaPatch(0x11CAF1E, "488d0d11caf102", "plugin", "authstore.(*pluginKeychain).Delete"),
+        X64LeaPatch(0x11CAF7E, "488d0db1c9f102", "plugin", "authstore.(*pluginKeychain).Get"),
+        X64LeaPatch(0x11CAFE9, "488d3546c9f102", "plugin", "authstore.(*pluginKeychain).Set"),
     ),
     length_loads=(
-        WindowsLengthPatch(
+        X64LengthPatch(
             0x2D69E2D,
             "48c78424b000000007000000",
             8,
             "codeassistclient.DefaultKeyringMarkerPath",
         ),
-        WindowsLengthPatch(
+        X64LengthPatch(
             0x2DA5CBD,
             "48c744245007000000",
             5,
@@ -314,12 +314,56 @@ def _patch_macos(binary):
                 stream.write(struct.pack("<I", 0xD2800100 | load.length_register))
 
 
-def _windows_targets(layout):
+def _x64_targets(layout):
     return {
         "account": layout.account_rva,
         "fallback": layout.fallback_rva,
         "plugin": layout.plugin_rva,
     }
+
+
+def patch_x64_layout(image, layout, empty_byte=0):
+    if image.read_rva(layout.cave_rva - 1, 49) != bytes([empty_byte]) * 49:
+        raise ValueError("credential storage literal region is not empty")
+    originals = (
+        (layout.original_account_rva, b"antigravity", "native credential storage name"),
+        (layout.original_fallback_rva, b".gemini", "native credential fallback directory"),
+        (layout.original_plugin_rva, b"antigravity.plugins", "native plugin storage name"),
+    )
+    for rva, expected, description in originals:
+        if image.read_rva(rva, len(expected)) != expected:
+            raise ValueError(f"unexpected {description}")
+    targets = _x64_targets(layout)
+    for patch in layout.loads:
+        expected = bytes.fromhex(patch.expected_hex)
+        if len(expected) != 7:
+            raise ValueError("internal Windows LEA patch template must be seven bytes")
+        if image.read_rva(patch.rva, 7) != expected:
+            raise ValueError(f"unsupported credential storage code at {patch.rva:#x} in {patch.function}")
+        old_target = patch.rva + 7 + struct.unpack_from("<i", expected, 3)[0]
+        expected_original = {
+            "account": layout.original_account_rva,
+            "fallback": layout.original_fallback_rva,
+            "plugin": layout.original_plugin_rva,
+        }[patch.literal]
+        if old_target != expected_original:
+            raise ValueError(f"internal Windows LEA patch template has the wrong target at {patch.rva:#x}")
+    for patch in layout.length_loads:
+        expected = bytes.fromhex(patch.expected_hex)
+        if image.read_rva(patch.rva, len(expected)) != expected:
+            raise ValueError(f"unsupported credential storage length code at {patch.rva:#x} in {patch.function}")
+        if expected[patch.immediate_offset:patch.immediate_offset + 4] != struct.pack("<I", 7):
+            raise ValueError("internal Windows length patch template does not contain length seven")
+
+    image.write_rva(layout.cave_rva, STORAGE_LITERALS)
+    for patch in layout.loads:
+        target = targets[patch.literal]
+        displacement = target - (patch.rva + 7)
+        if not -(1 << 31) <= displacement < (1 << 31):
+            raise ValueError(f"credential storage literal is outside RIP-relative range at {patch.rva:#x}")
+        image.write_rva(patch.rva + 3, struct.pack("<i", displacement))
+    for patch in layout.length_loads:
+        image.write_rva(patch.rva + patch.immediate_offset, struct.pack("<I", 8))
 
 
 def _patch_windows_x64(binary, version, layout=None):
@@ -328,48 +372,7 @@ def _patch_windows_x64(binary, version, layout=None):
     if layout is None:
         layout = WINDOWS_X64_LAYOUTS[version]
     with binary.open("r+b") as stream:
-        pe = PE64Image(stream)
-        if pe.read_rva(layout.cave_rva - 1, 49) != bytes(49):
-            raise ValueError("credential storage literal region is not empty")
-        originals = (
-            (layout.original_account_rva, b"antigravity", "native credential storage name"),
-            (layout.original_fallback_rva, b".gemini", "native credential fallback directory"),
-            (layout.original_plugin_rva, b"antigravity.plugins", "native plugin storage name"),
-        )
-        for rva, expected, description in originals:
-            if pe.read_rva(rva, len(expected)) != expected:
-                raise ValueError(f"unexpected {description}")
-        targets = _windows_targets(layout)
-        for patch in layout.loads:
-            expected = bytes.fromhex(patch.expected_hex)
-            if len(expected) != 7:
-                raise ValueError("internal Windows LEA patch template must be seven bytes")
-            if pe.read_rva(patch.rva, 7) != expected:
-                raise ValueError(f"unsupported credential storage code at {patch.rva:#x} in {patch.function}")
-            old_target = patch.rva + 7 + struct.unpack_from("<i", expected, 3)[0]
-            expected_original = {
-                "account": layout.original_account_rva,
-                "fallback": layout.original_fallback_rva,
-                "plugin": layout.original_plugin_rva,
-            }[patch.literal]
-            if old_target != expected_original:
-                raise ValueError(f"internal Windows LEA patch template has the wrong target at {patch.rva:#x}")
-        for patch in layout.length_loads:
-            expected = bytes.fromhex(patch.expected_hex)
-            if pe.read_rva(patch.rva, len(expected)) != expected:
-                raise ValueError(f"unsupported credential storage length code at {patch.rva:#x} in {patch.function}")
-            if expected[patch.immediate_offset:patch.immediate_offset + 4] != struct.pack("<I", 7):
-                raise ValueError("internal Windows length patch template does not contain length seven")
-
-        pe.write_rva(layout.cave_rva, STORAGE_LITERALS)
-        for patch in layout.loads:
-            target = targets[patch.literal]
-            displacement = target - (patch.rva + 7)
-            if not -(1 << 31) <= displacement < (1 << 31):
-                raise ValueError(f"credential storage literal is outside RIP-relative range at {patch.rva:#x}")
-            pe.write_rva(patch.rva + 3, struct.pack("<i", displacement))
-        for patch in layout.length_loads:
-            pe.write_rva(patch.rva + patch.immediate_offset, struct.pack("<I", 8))
+        patch_x64_layout(PE64Image(stream), layout)
 
 
 def patch_login(binary_path, platform=None, arch=None, version=None):

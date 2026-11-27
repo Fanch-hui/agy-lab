@@ -172,7 +172,7 @@ def patch_language_server(app_root):
             source,
             "            '--enable_sidecars',",
             """            '--gemini_dir',
-            require("path").join(require("electron").app.getPath("userData"), "gemini"),
+            labWsl ? labWsl.geminiDir : require("path").join(require("electron").app.getPath("userData"), "gemini"),
             '--config_dir',
             'config',
             '--enable_sidecars',""",
@@ -182,7 +182,8 @@ def patch_language_server(app_root):
             source,
             "    const loginShellEnv = await shellEnvReads.take();",
             """    const loginShellEnv = await shellEnvReads.take();
-    const labCloudEndpoint = await require('./lab/cloud-proxy.cjs').cloudEndpoint(lsDefaults_1.LS_CLOUD_CODE_ENDPOINT);""",
+    const labCloudEndpoint = await require('./lab/cloud-proxy.cjs').cloudEndpoint(lsDefaults_1.LS_CLOUD_CODE_ENDPOINT);
+    const labWsl = wsl ? await require('./lab/wsl.cjs').prepareServer(wsl.distro, labCloudEndpoint, lsDefaults_1.LS_CLOUD_CODE_ENDPOINT) : null;""",
             "language-server startup",
         )
         source = replace_once(
@@ -192,15 +193,42 @@ def patch_language_server(app_root):
         ];
         const labCloudFlag = args.indexOf('--cloud_code_endpoint');
         if (labCloudFlag < 0) throw new Error('Language server arguments have no Cloud Code endpoint');
-        args[labCloudFlag + 1] = labCloudEndpoint;""",
+        args[labCloudFlag + 1] = labWsl ? labWsl.cloudEndpoint : labCloudEndpoint;""",
             "language-server cloud endpoint",
         )
-        return replace_once(
+        source = replace_once(
             source,
             "        const env = { ...process.env, ...loginShellEnv };",
             """        const env = { ...process.env, ...loginShellEnv };
         env['ANTIGRAVITY_AUTH_SUCCESS_APP'] = 'agy-lab';""",
             "language-server environment",
+        )
+        return replace_once(
+            source,
+            "            (0, authBootstrap_1.appendWslAuthEnvForwarding)(env);",
+            """            (0, authBootstrap_1.appendWslAuthEnvForwarding)(env);
+            require('./lab/wsl.cjs').forwardEnv(env);""",
+            "WSL environment forwarding",
+        )
+
+    update_file(path, transform)
+
+
+def patch_wsl(app_root):
+    path = app_root / "dist" / "wsl.js"
+
+    def transform(source):
+        source = replace_once(
+            source,
+            "    return `$HOME/.antigravity-server/bin/${version}`;",
+            "    return require('./lab/wsl.cjs').installDir(version);",
+            "WSL server install directory",
+        )
+        return replace_once(
+            source,
+            "    const override = process.env.ANTIGRAVITY_WSL_LS_PATH;",
+            "    const override = require('./lab/wsl.cjs').bundledServer();",
+            "WSL server binary override",
         )
 
     update_file(path, transform)
@@ -258,6 +286,7 @@ def install_lab(app_root, lab_dir):
     patch_main(app_root)
     patch_paths(app_root)
     patch_language_server(app_root)
+    patch_wsl(app_root)
     patch_menu(app_root)
     patch_updater(app_root)
 

@@ -10,7 +10,7 @@ from bundle_context import (  # noqa: E402
     WINDOWS_CAP_ORIGINAL,
     WINDOWS_CAP_SEQUENCE,
     X64_CAP_REPLACEMENT,
-    WindowsContextCapPatch,
+    X64ContextCapPatch,
     _patch_windows_x64,
 )
 
@@ -41,7 +41,7 @@ def synthetic_patch():
     sequence_rva = 0x1010
     original = bytes.fromhex(WINDOWS_CAP_ORIGINAL)
     cap_rva = sequence_rva + bytes.fromhex(WINDOWS_CAP_SEQUENCE).index(original)
-    return WindowsContextCapPatch(
+    return X64ContextCapPatch(
         sequence_rva=sequence_rva,
         sequence_hex=WINDOWS_CAP_SEQUENCE,
         cap_rva=cap_rva,
@@ -56,7 +56,7 @@ def populated_pe():
     return data, patch
 
 
-class WindowsContextCapPatchTest(unittest.TestCase):
+class X64ContextCapPatchTest(unittest.TestCase):
     def write_binary(self, directory, data):
         path = Path(directory) / "language_server.exe"
         path.write_bytes(bytes(data))

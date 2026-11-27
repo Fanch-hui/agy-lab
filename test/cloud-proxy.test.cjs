@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { startCloudProxy } = require('../lab/cloud-proxy.cjs');
+const { expectProbe, startCloudProxy } = require('../lab/cloud-proxy.cjs');
 
 async function listen(server) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -53,6 +53,24 @@ test('forwards requests unchanged and streams responses back', async context => 
   assert.deepEqual(received[0].body, body);
   assert.equal(received[0].headers.authorization, 'Bearer secret-value');
   assert.equal(received[0].headers['x-goog-custom'], 'kept');
+});
+
+
+test('answers a probe once without forwarding or recording it', async context => {
+  const { proxy, received } = await fixture(context, (_request, response) => response.end('{}'));
+  const probe = expectProbe();
+  const first = await fetch(proxy.url + probe.path);
+  assert.equal(first.status, 204);
+  assert.equal(await first.text(), '');
+  assert.equal(probe.seen(), true);
+  assert.equal(received.length, 0);
+  assert.deepEqual(proxy.inventory.snapshot(), []);
+
+  const second = await fetch(proxy.url + probe.path);
+  assert.equal(second.status, 200);
+  assert.equal(await second.text(), '{}');
+  assert.equal(received.length, 1);
+  assert.equal(received[0].url, probe.path);
 });
 
 test('records only path, query names, model and status', async context => {
