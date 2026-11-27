@@ -78,6 +78,10 @@ python3 scripts/build_app.py --source /Applications/Antigravity.app --zh /path/t
 - **升级原版后构建失败**：本项目按受支持的版本、输入哈希及补丁锚点检查，不保证新版兼容。请使用支持的版本或等待对应适配，不要跳过校验。
 - **macOS 提示应用无法验证**：Lab 是在本机构建、临时签名的副本，不是 Google 签名或 Apple 公证的发行版。先确认源文件和构建过程可信，再按 macOS 提示处理；不要关闭全局安全检查。
 
+## 社区
+
+欢迎到 [LINUX DO](https://linux.do) 社区交流使用体验、反馈问题和分享配置。
+
 ## 许可证
 
 本项目自有源码采用 [MIT 许可证](LICENSE)。Antigravity、Electron 和外部汉化项目不因本仓库的许可而改变各自的授权条款。
