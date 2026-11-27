@@ -38,10 +38,15 @@ WINDOWS_INPUT_SHA256 = {
         "app.asar": "e057115571cf5085406d20f2427a5afac272b712ec84332c7157da0113d4b2d0",
         "bin/language_server.exe": "fcdf7454007c6edc8162e601628c28cc1e6f575be849f329bb864c41ba6e6b02",
     },
+    "2.36.0": {
+        "app.asar": "d2bc25eab00f2ff6f14395e45f13347eef605af5a63f28db7edbfd2ab42a7571",
+        "bin/language_server.exe": "a8895eeba5c358b02ef369ce239e334aa4627b2a4e95763497b5242e098ebdee",
+    },
 }
 WINDOWS_UNPACKED_TREE_SHA256 = {
     "2.35.1": "6e7ec1d5d3ec795c1690199398b7f8f54527939fe96966de786fc54628f88ecb",
     "2.35.2": "6e7ec1d5d3ec795c1690199398b7f8f54527939fe96966de786fc54628f88ecb",
+    "2.36.0": "649e154f232ce98891e04b9558cb097ae0fa8b21a49972987af04c7e1e328cfd",
 }
 
 

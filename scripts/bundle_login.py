@@ -1,8 +1,8 @@
 """Isolate the desktop language server's credential storage.
 
 The macOS 2.35.1 and 2.35.2 servers share one Mach-O layout; 2.36.0 has its
-own. The Windows x64 2.35.1 and 2.35.2 servers share the PE64 layout used by
-the Windows patch table.
+own. The Windows x64 2.35.1 and 2.35.2 servers share one PE64 layout; 2.36.0
+has its own.
 """
 
 from dataclasses import dataclass
@@ -108,22 +108,14 @@ class WindowsLayout:
 
 # File offset 0x4dd3260 / RVA 0x4dd4a60 is inside a long zero-filled alignment
 # region in .rdata in both supported Windows x64 language servers.
-WINDOWS_CAVE_RVA = 0x4DD4A60
-WINDOWS_ACCOUNT_RVA = WINDOWS_CAVE_RVA
-WINDOWS_FALLBACK_RVA = WINDOWS_ACCOUNT_RVA + 12
-WINDOWS_PLUGIN_RVA = WINDOWS_FALLBACK_RVA + 9
-WINDOWS_ORIGINAL_ACCOUNT_RVA = 0x3DEA75E
-WINDOWS_ORIGINAL_FALLBACK_RVA = 0x3D8B201
-WINDOWS_ORIGINAL_PLUGIN_RVA = 0x3E92D39
-
-WINDOWS_X64_LAYOUT = WindowsLayout(
-    cave_rva=WINDOWS_CAVE_RVA,
-    account_rva=WINDOWS_ACCOUNT_RVA,
-    fallback_rva=WINDOWS_FALLBACK_RVA,
-    plugin_rva=WINDOWS_PLUGIN_RVA,
-    original_account_rva=WINDOWS_ORIGINAL_ACCOUNT_RVA,
-    original_fallback_rva=WINDOWS_ORIGINAL_FALLBACK_RVA,
-    original_plugin_rva=WINDOWS_ORIGINAL_PLUGIN_RVA,
+WINDOWS_X64_2_35 = WindowsLayout(
+    cave_rva=0x4DD4A60,
+    account_rva=0x4DD4A60,
+    fallback_rva=0x4DD4A6C,
+    plugin_rva=0x4DD4A75,
+    original_account_rva=0x3DEA75E,
+    original_fallback_rva=0x3D8B201,
+    original_plugin_rva=0x3E92D39,
     loads=(
         WindowsLeaPatch(0x30508F7, "488d15609ed900", "account", "authclient.NewAuthClient"),
         WindowsLeaPatch(0x10533E6, "488d157173d902", "account", "authstore.pluginFallbackPath"),
@@ -154,9 +146,52 @@ WINDOWS_X64_LAYOUT = WindowsLayout(
     ),
 )
 
+# The 2.36.0 storage names go in the zero slack between the section table
+# (ends at file offset 0x3B0) and SizeOfHeaders (0x600), which the loader maps
+# read-only at the image base; the long zero run in .rdata is a real zero-valued
+# Go object (referenced by mldsa signing), not padding.
+WINDOWS_X64_2_36 = WindowsLayout(
+    cave_rva=0x400,
+    account_rva=0x400,
+    fallback_rva=0x40C,
+    plugin_rva=0x415,
+    original_account_rva=0x403DD64,
+    original_fallback_rva=0x3FDE340,
+    original_plugin_rva=0x40E7936,
+    loads=(
+        WindowsLeaPatch(0x3213057, "488d1506ade200", "account", "authclient.NewAuthClient"),
+        WindowsLeaPatch(0x11C8646, "488d151757e702", "account", "authstore.pluginFallbackPath"),
+        WindowsLeaPatch(0x11C9871, "488d15ec44e702", "account", "authstore.scopeFilePath"),
+        WindowsLeaPatch(0x2D69E39, "488d1500452701", "fallback", "codeassistclient.DefaultKeyringMarkerPath"),
+        WindowsLeaPatch(0x2DA5CC6, "488d1573862301", "fallback", "codeassistclient.NewFileTokenStorage"),
+        WindowsLeaPatch(0x11C79B3, "488d0d7cfff102", "plugin", "authstore.pluginKeychain.Get"),
+        WindowsLeaPatch(0x11C7A18, "488d3517fff102", "plugin", "authstore.pluginKeychain.Set"),
+        WindowsLeaPatch(0x11C7A73, "488d0dbcfef102", "plugin", "authstore.pluginKeychain.Delete"),
+        WindowsLeaPatch(0x11C8299, "488d1d96f6f102", "plugin", "authstore.keychainAvailable"),
+        WindowsLeaPatch(0x11CAF1E, "488d0d11caf102", "plugin", "authstore.(*pluginKeychain).Delete"),
+        WindowsLeaPatch(0x11CAF7E, "488d0db1c9f102", "plugin", "authstore.(*pluginKeychain).Get"),
+        WindowsLeaPatch(0x11CAFE9, "488d3546c9f102", "plugin", "authstore.(*pluginKeychain).Set"),
+    ),
+    length_loads=(
+        WindowsLengthPatch(
+            0x2D69E2D,
+            "48c78424b000000007000000",
+            8,
+            "codeassistclient.DefaultKeyringMarkerPath",
+        ),
+        WindowsLengthPatch(
+            0x2DA5CBD,
+            "48c744245007000000",
+            5,
+            "codeassistclient.NewFileTokenStorage",
+        ),
+    ),
+)
+
 WINDOWS_X64_LAYOUTS = {
-    "2.35.1": WINDOWS_X64_LAYOUT,
-    "2.35.2": WINDOWS_X64_LAYOUT,
+    "2.35.1": WINDOWS_X64_2_35,
+    "2.35.2": WINDOWS_X64_2_35,
+    "2.36.0": WINDOWS_X64_2_36,
 }
 
 
@@ -184,6 +219,7 @@ class PE64Image:
         self.section_count = section_count
         self.section_table_offset = self.optional_offset + optional_size
         self.checksum_offset = self.optional_offset + 64
+        self.size_of_headers = struct.unpack_from("<I", optional, 60)[0]
         directory_count = struct.unpack_from("<I", optional, 108)[0]
         self.certificate_directory_offset = None
         if optional_size >= 152 and directory_count > 4:
@@ -199,6 +235,8 @@ class PE64Image:
             self.sections.append((name, virtual_address, virtual_size, raw_offset, raw_size))
 
     def rva_to_offset(self, rva):
+        if rva < self.size_of_headers:
+            return rva
         for _, virtual_address, virtual_size, raw_offset, raw_size in self.sections:
             span = max(virtual_size, raw_size)
             if virtual_address <= rva < virtual_address + span:

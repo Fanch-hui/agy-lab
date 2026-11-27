@@ -43,7 +43,7 @@ python3 scripts/build_app.py --source /Applications/Antigravity.app
 
 ### Windows x64
 
-需要 Windows x64 原版 Antigravity **2.35.1 或 2.35.2** 的安装目录。输出为免安装目录 `dist\Antigravity Lab\`：
+需要 Windows x64 原版 Antigravity **2.35.1、2.35.2 或 2.36.0** 的安装目录。输出为免安装目录 `dist\Antigravity Lab\`：
 
 ```powershell
 python scripts\build_app.py --source "$env:LOCALAPPDATA\Programs\antigravity"

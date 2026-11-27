@@ -9,7 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from bundle_login import (  # noqa: E402
     PE64Image,
     STORAGE_LITERALS,
-    WINDOWS_X64_LAYOUT,
+    WINDOWS_X64_2_35,
+    WINDOWS_X64_LAYOUTS,
     WindowsLayout,
     WindowsLeaPatch,
     WindowsLengthPatch,
@@ -41,6 +42,7 @@ def make_pe(certificate=False):
     struct.pack_into("<HHIIIHH", data, 0x84, 0x8664, 2, 0, 0, 0, 0xF0, 0)
     optional = 0x98
     struct.pack_into("<H", data, optional, 0x20B)
+    struct.pack_into("<I", data, optional + 60, 0x200)
     struct.pack_into("<I", data, optional + 64, 0x12345678)
     struct.pack_into("<I", data, optional + 108, 16)
     section_table = optional + 0xF0
@@ -130,6 +132,14 @@ class WindowsPEPatchTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     pe.rva_to_offset(0x2000)
 
+    def test_pe_headers_map_one_to_one(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = self.write_binary(temporary, make_pe())
+            with binary.open("rb") as stream:
+                pe = PE64Image(stream)
+                self.assertEqual(pe.size_of_headers, 0x200)
+                self.assertEqual(pe.rva_to_offset(0x180), 0x180)
+
     def test_instruction_template_mismatch_aborts(self):
         data, layout = populate_pe()
         write_rva(data, layout.loads[0].rva, bytes(7))
@@ -147,7 +157,7 @@ class WindowsPEPatchTest(unittest.TestCase):
                 _patch_windows_x64(binary, "2.35.2", layout)
 
     def test_supported_layout_includes_native_credential_client(self):
-        layout = WINDOWS_X64_LAYOUT
+        layout = WINDOWS_X64_2_35
         anchors = [patch for patch in layout.loads if patch.function == "authclient.NewAuthClient"]
         self.assertEqual(
             anchors,
@@ -180,6 +190,25 @@ class WindowsPEPatchTest(unittest.TestCase):
             with self.subTest(rva=hex(patch.rva), function=patch.function):
                 immediate = struct.unpack_from("<I", bytes.fromhex(patch.expected_hex), patch.immediate_offset)[0]
                 self.assertEqual(immediate, 7)
+
+    def test_layout_templates_target_original_literals(self):
+        for layout in set(WINDOWS_X64_LAYOUTS.values()):
+            original_targets = {
+                "account": layout.original_account_rva,
+                "fallback": layout.original_fallback_rva,
+                "plugin": layout.original_plugin_rva,
+            }
+            for patch in layout.loads:
+                with self.subTest(rva=hex(patch.rva), function=patch.function):
+                    expected = bytes.fromhex(patch.expected_hex)
+                    self.assertEqual(len(expected), 7)
+                    displacement = struct.unpack_from("<i", expected, 3)[0]
+                    self.assertEqual(patch.rva + 7 + displacement, original_targets[patch.literal])
+            for patch in layout.length_loads:
+                with self.subTest(rva=hex(patch.rva), function=patch.function):
+                    expected = bytes.fromhex(patch.expected_hex)
+                    immediate = struct.unpack_from("<I", expected, patch.immediate_offset)[0]
+                    self.assertEqual(immediate, 7)
 
     def strip_in_dist(self, data):
         dist = Path(__file__).resolve().parent.parent / "dist"

@@ -56,6 +56,12 @@ WINDOWS_X64_CAP_PATCHES = {
         cap_rva=WINDOWS_CAP_RVA,
         original_hex=WINDOWS_CAP_ORIGINAL,
     ),
+    "2.36.0": WindowsContextCapPatch(
+        sequence_rva=0x19C709E,
+        sequence_hex=WINDOWS_CAP_SEQUENCE,
+        cap_rva=0x19C70AD,
+        original_hex=WINDOWS_CAP_ORIGINAL,
+    ),
 }
 
 

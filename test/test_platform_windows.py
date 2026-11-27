@@ -10,7 +10,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+from bundle_context import WINDOWS_X64_CAP_PATCHES  # noqa: E402
+from bundle_login import WINDOWS_X64_LAYOUTS  # noqa: E402
 from platform_windows import (  # noqa: E402
+    WINDOWS_INPUT_SHA256,
+    WINDOWS_UNPACKED_TREE_SHA256,
     extract_zip_safely,
     has_google_llc_subject,
     identify_verified_source,
@@ -32,6 +36,14 @@ def write_fixture(root, relative_path, contents):
 def unpacked_tree_digest():
     # Hash records are relative path, NUL, and the raw SHA-256 of the file.
     return hashlib.sha256(b"nested/file.bin\0" + hashlib.sha256(b"unpacked").digest()).hexdigest()
+
+
+class WindowsVersionTablesTest(unittest.TestCase):
+    def test_supported_version_key_sets_match(self):
+        expected = set(WINDOWS_X64_LAYOUTS)
+        self.assertEqual(set(WINDOWS_X64_CAP_PATCHES), expected)
+        self.assertEqual(set(WINDOWS_INPUT_SHA256), expected)
+        self.assertEqual(set(WINDOWS_UNPACKED_TREE_SHA256), expected)
 
 
 class InstallerSubjectTest(unittest.TestCase):
