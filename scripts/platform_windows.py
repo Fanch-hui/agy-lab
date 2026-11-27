@@ -16,6 +16,7 @@ from bundle_base import (
     DEFAULT_CHECKSUMS, DISPLAY_NAME, PROJECT_ROOT, bundle_chinese, find_asar,
     install_lab, run, sha256_file, verified_electron_archive,
 )
+from bundle_context import patch_context_cap
 from bundle_login import patch_login, strip_pe_signature
 from renderer_patch import patch_renderer
 
@@ -241,6 +242,7 @@ def build(source, archive, checksums, output, installer=None, zh_project=None):
 
         server = resources / "bin" / "language_server.exe"
         patch_login(server, platform="windows", arch="x64", version=version)
+        patch_context_cap(server, platform="windows", arch="x64", version=version)
         renderer_source = patch_renderer(server)
         if zh_project is not None:
             bundle_chinese(zh_project, renderer_source, scratch, app_root)
