@@ -1,16 +1,21 @@
 diff -ruN agy-context-speed/sidecars/monitor/aggregate.mjs agy-context-speed/sidecars/monitor/aggregate.mjs
 --- agy-context-speed/sidecars/monitor/aggregate.mjs	2026-11-28 01:36:41
-+++ agy-context-speed/sidecars/monitor/aggregate.mjs	2026-11-28 03:08:08
-@@ -7,7 +7,7 @@
++++ agy-context-speed/sidecars/monitor/aggregate.mjs	2026-11-28 03:33:40
+@@ -3,11 +3,10 @@
+  * 每个额度池周期均支持「首次调用才开始计时、不用不开始」的滚动机制及额外发放重置。
+  */
+ import { statSync } from 'node:fs';
+-import { homedir } from 'node:os';
  import { join } from 'node:path';
  import { readRecentCalls } from './calls.mjs';
- import { discoverSessions, extractTurns, readJsonlTail } from './metrics.mjs';
+-import { discoverSessions, extractTurns, readJsonlTail } from './metrics.mjs';
 -import { QUOTA_POOLS, aggregatePriced, modelPool, priceTurns } from './pricing.mjs';
++import { LAB_DATA, discoverSessions, extractTurns, readJsonlTail } from './metrics.mjs';
 +import { QUOTA_POOLS, aggregatePriced, aggregateThirdParty, modelPool, priceTurns } from './pricing.mjs';
  import { DEFAULT_WINDOWS, sanitizeWindows } from './settings.mjs';
  
  const DAY_MS = 86_400_000;
-@@ -54,6 +54,15 @@
+@@ -54,6 +53,15 @@
    return { startMs: monthStart, endMs: nowMs, nextMs: monthNext };
  }
  
@@ -26,7 +31,7 @@ diff -ruN agy-context-speed/sidecars/monitor/aggregate.mjs agy-context-speed/sid
  /**
   * 计算单个额度池的活动窗口：
   * - 周期到期或点击「重置」后，不会按固定钟表自动切入下一轮，而是等待该池首次实际调用才开始计时；
-@@ -140,12 +149,12 @@
+@@ -140,12 +148,12 @@
    return priced;
  }
  
@@ -41,7 +46,16 @@ diff -ruN agy-context-speed/sidecars/monitor/aggregate.mjs agy-context-speed/sid
  }
  
  function buildPoolWindow(poolConfigs, turnsByPool, timesByPool, defaultCycleHours, now) {
-@@ -190,12 +199,14 @@
+@@ -172,7 +180,7 @@
+ }
+ 
+ /** 汇总所有本地会话（含子代理）在 5 小时、本周（7 天）与本月的用量及等价 API 费用。 */
+-export function summarizeAllWindows({ home = homedir(), windows = DEFAULT_WINDOWS, now = Date.now() } = {}) {
++export function summarizeAllWindows({ home = LAB_DATA, windows = DEFAULT_WINDOWS, now = Date.now() } = {}) {
+   const cfg = sanitizeWindows(windows, DEFAULT_WINDOWS);
+   const monthBounds = resolveMonthWindow(cfg, now);
+   const anchorTimes = [
+@@ -190,12 +198,14 @@
      }
    }
  
@@ -60,7 +74,7 @@ diff -ruN agy-context-speed/sidecars/monitor/aggregate.mjs agy-context-speed/sid
    }
    const timesByPool = new Map(QUOTA_POOLS.map(def => [
      def.id,
-@@ -204,14 +215,19 @@
+@@ -204,14 +214,19 @@
  
    const fiveHour = buildPoolWindow(cfg.fiveHour, turnsByPool, timesByPool, 5, now);
    const week = buildPoolWindow(cfg.week, turnsByPool, timesByPool, 168, now);
@@ -899,10 +913,11 @@ diff -ruN agy-context-speed/sidecars/monitor/main.mjs agy-context-speed/sidecars
  app.api('/api/telemetry', (data) => {
 diff -ruN agy-context-speed/sidecars/monitor/metrics.mjs agy-context-speed/sidecars/monitor/metrics.mjs
 --- agy-context-speed/sidecars/monitor/metrics.mjs	2026-11-28 01:36:41
-+++ agy-context-speed/sidecars/monitor/metrics.mjs	2026-11-28 03:13:22
-@@ -2,12 +2,14 @@
++++ agy-context-speed/sidecars/monitor/metrics.mjs	2026-11-28 03:33:40
+@@ -1,13 +1,14 @@
+ /** Read-only Antigravity JSONL telemetry. No network calls or application bundle access. */
  import { openSync, closeSync, readSync, readdirSync, statSync, existsSync, readFileSync } from 'node:fs';
- import { homedir } from 'node:os';
+-import { homedir } from 'node:os';
  import { join } from 'node:path';
 +import { fileURLToPath } from 'node:url';
  import { readSummaries } from './summaries.mjs';
@@ -918,7 +933,7 @@ diff -ruN agy-context-speed/sidecars/monitor/metrics.mjs agy-context-speed/sidec
  const MAX_SESSIONS = 60;
  const READ_TAIL = 8 * 1024 * 1024;
  const MAX_LINES = 8000;
-@@ -15,8 +17,13 @@
+@@ -15,8 +16,13 @@
  export const LIMIT_TIERS = [256_000, 512_000, 1_000_000];
  const ALIGN_SLACK = 4;
  
@@ -929,12 +944,30 @@ diff -ruN agy-context-speed/sidecars/monitor/metrics.mjs agy-context-speed/sidec
 +// Google account from the original app, so the original app's data is never read.
 +export const LAB_DATA = fileURLToPath(new URL('../../../../../', import.meta.url));
 +
-+export function appRoots() {
-+  return [{ name: 'agy-lab', dir: join(LAB_DATA, 'agy-lab') }];
++export function appRoots(home = LAB_DATA) {
++  return [{ name: 'agy-lab', dir: join(home, 'agy-lab') }];
  }
  
  function safeStat(file) { try { return statSync(file); } catch { return null; } }
-@@ -173,15 +180,15 @@
+@@ -46,7 +52,7 @@
+ }
+ 
+ /** Discover local sessions; excludes subagents by default unless `includeSubagents` is true. */
+-export function discoverSessions(home = homedir(), { includeSubagents = false } = {}) {
++export function discoverSessions(home = LAB_DATA, { includeSubagents = false } = {}) {
+   const found = [];
+   for (const root of appRoots(home)) {
+     const brain = join(root.dir, 'brain');
+@@ -74,7 +80,7 @@
+   return found.sort((a, b) => b.modified - a.modified);
+ }
+ 
+-export function listSessions(home = homedir(), limit = MAX_SESSIONS) {
++export function listSessions(home = LAB_DATA, limit = MAX_SESSIONS) {
+   return discoverSessions(home).slice(0, Math.max(1, Math.min(200, Number(limit) || MAX_SESSIONS)));
+ }
+ 
+@@ -173,15 +179,15 @@
    && (turn.output ?? 0) === (call.output ?? 0) && (turn.cached ?? 0) === (call.cached ?? 0);
  
  function applyCall(turn, call) {
@@ -956,7 +989,7 @@ diff -ruN agy-context-speed/sidecars/monitor/metrics.mjs agy-context-speed/sidec
      };
    }
  }
-@@ -237,7 +244,7 @@
+@@ -237,7 +243,7 @@
      sessionOutput += u.output || 0;
      turns.push({
        stepIndex: s.step_index ?? i, when: getWhen(s), ...u,
@@ -965,7 +998,7 @@ diff -ruN agy-context-speed/sidecars/monitor/metrics.mjs agy-context-speed/sidec
      });
    }
    if (!last && turns.length) {
-@@ -284,54 +291,93 @@
+@@ -284,54 +290,93 @@
    const stamp = `${log.file}:${log.size}:${log.modified}:${dbStamp(rootDir, uuid)}`;
    const hit = subCache.get(`${rootDir}:${uuid}`);
    if (hit?.stamp === stamp) return hit.data;
@@ -1095,7 +1128,7 @@ diff -ruN agy-context-speed/sidecars/monitor/metrics.mjs agy-context-speed/sidec
        })),
        lastStepIndex: lastIdx,
      },
-@@ -342,43 +388,46 @@
+@@ -342,43 +387,46 @@
    return analyzeStepsWithPriced(steps, options).snapshot;
  }
  
@@ -1173,6 +1206,15 @@ diff -ruN agy-context-speed/sidecars/monitor/metrics.mjs agy-context-speed/sidec
    return {
      session: {
        id: session.id, title: session.title || '', workspace: session.workspace, source: session.source,
+@@ -393,7 +441,7 @@
+  * Safe entrypoint: both IDs are only ever matched against discovered sessions.
+  * Priority: manually selected `id` → the host's open `conversationId` → most recently active.
+  */
+-export function getSnapshot({ home = homedir(), id = '', conversationId = '', defaultContextLimit = 256_000 } = {}) {
++export function getSnapshot({ home = LAB_DATA, id = '', conversationId = '', defaultContextLimit = 256_000 } = {}) {
+   const all = discoverSessions(home);
+   if (!all.length) return { status: 'empty', sessions: [], snapshot: null, message: '未找到 Antigravity 本地会话日志' };
+   const opened = all.find(s => s.uuid === conversationId);
 diff -ruN agy-context-speed/sidecars/monitor/models.mjs agy-context-speed/sidecars/monitor/models.mjs
 --- agy-context-speed/sidecars/monitor/models.mjs	2026-11-28 01:36:41
 +++ agy-context-speed/sidecars/monitor/models.mjs	2026-11-28 03:08:08
@@ -2226,3 +2268,153 @@ diff -ruN agy-context-speed/sidecars/monitor/windows-ui.js agy-context-speed/sid
  }
  
  window.__agyWindowsUI = createWindowsPanel;
+diff -ruN agy-context-speed/test/metrics.test.mjs agy-context-speed/test/metrics.test.mjs
+--- agy-context-speed/test/metrics.test.mjs	2026-11-28 01:36:41
++++ agy-context-speed/test/metrics.test.mjs	2026-11-28 03:35:35
+@@ -90,7 +90,7 @@
+   const home = mkdtempSync(join(tmpdir(), 'agy-test-'));
+   try {
+     const uuid = '12345678-1234-1234-1234-123456789abc';
+-    const base = join(home, '.gemini', 'antigravity', 'brain', uuid, '.system_generated', 'logs');
++    const base = join(home, 'agy-lab', 'brain', uuid, '.system_generated', 'logs');
+     mkdirSync(base, { recursive: true });
+     const row = step(0, { source: 'MODEL', type: 'PLANNER_RESPONSE', input_tokens: 1024, cache_read_tokens: 2048, output_tokens: 20 });
+     writeFileSync(join(base, 'transcript.jsonl'), JSON.stringify(row) + '\n');
+@@ -114,7 +114,7 @@
+   const { DatabaseSync } = await import('node:sqlite');
+   const home = mkdtempSync(join(tmpdir(), 'agy-test-'));
+   try {
+-    const root = join(home, '.gemini', 'antigravity');
++    const root = join(home, 'agy-lab');
+     const ids = { open: 'aaaaaaaa-0000-0000-0000-000000000001', child: 'bbbbbbbb-0000-0000-0000-000000000002', recent: 'cccccccc-0000-0000-0000-000000000003' };
+     const tokens = { open: 111, child: 222, recent: 333 };
+     for (const [key, uuid] of Object.entries(ids)) {
+@@ -197,14 +197,14 @@
+   const { DatabaseSync } = await import('node:sqlite');
+   const home = mkdtempSync(join(tmpdir(), 'agy-test-'));
+   try {
+-    const root = join(home, '.gemini', 'antigravity');
++    const root = join(home, 'agy-lab');
+     const uuid = 'dddddddd-0000-0000-0000-000000000004';
+     const logs = join(root, 'brain', uuid, '.system_generated', 'logs');
+     mkdirSync(logs, { recursive: true });
+     mkdirSync(join(root, 'conversations'));
+     const calls = [
+-      { input: 21000, output: 100, ttft: 2, stream: 0.1, max: 512000, responseModel: 'gemini-4-hydrogen' },
+-      { input: 2500, output: 900, cached: 20000, ttft: 4, stream: 9.9, max: 512000, responseModel: 'gemini-4-hydrogen' },
++      { input: 21000, output: 100, ttft: 2, stream: 0.5, max: 512000, responseModel: 'gemini-4-hydrogen' },
++      { input: 2500, output: 900, cached: 20000, ttft: 4, stream: 9.5, max: 512000, responseModel: 'gemini-4-hydrogen' },
+     ];
+     writeFileSync(join(logs, 'transcript.jsonl'), calls.flatMap((c, i) => [
+       step(i * 60, { source: 'USER_EXPLICIT', type: 'USER_INPUT' }),
+@@ -221,7 +221,7 @@
+     assert.deepEqual([context.ceiling, context.ceilingSource, context.used], [512000, 'session', 22500]);
+     assert.equal(performance.mode, 'streaming');
+     assert.equal(performance.tps, 100);
+-    assert.deepEqual([performance.ttftSeconds, performance.ttftMedianSeconds, performance.durationSeconds], [4, 3, 9.9]);
++    assert.deepEqual([performance.ttftSeconds, performance.ttftMedianSeconds, performance.durationSeconds], [4, 3, 9.5]);
+     // Call 1: 21k * 1.5/1M + 100 * 7.5/1M = 0.03225
+     // Call 2: 2.5k * 1.5/1M + 20k * 0.075/1M + 900 * 7.5/1M = 0.012
+     assert.equal(cost.mode, 'exact');
+@@ -443,7 +443,7 @@
+   try {
+     const now = new Date(2026, 10, 17, 10, 30, 0, 0).getTime();
+     const writeSession = (source, uuid, rows, dbCalls) => {
+-      const root = join(home, '.gemini', source);
++      const root = join(home, 'agy-lab');
+       const logs = join(root, 'brain', uuid, '.system_generated', 'logs');
+       mkdirSync(logs, { recursive: true });
+       mkdirSync(join(root, 'conversations'), { recursive: true });
+@@ -475,7 +475,7 @@
+     ], [
+       { input: 1_000_000, output: 0, ttft: 1, stream: 1, max: 512000, responseModel: 'claude-opus-4-6-thinking' },
+     ]);
+-    const sdb = new DatabaseSync(join(home, '.gemini', 'antigravity', 'conversation_summaries.db'));
++    const sdb = new DatabaseSync(join(home, 'agy-lab', 'conversation_summaries.db'));
+     sdb.exec('CREATE TABLE conversation_summaries (conversation_id text, title text, preview text, workspace_uris text, parent_conversation_id text)');
+     sdb.prepare('INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)').run(mainId, 'Main', '', '[]', '');
+     sdb.prepare('INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)').run(subId, 'Sub', '', '[]', mainId);
+@@ -624,26 +624,30 @@
+   ];
+ 
+   const m = analyzeSteps(steps, { calls });
+-  assert.equal(m.performance.tps, 300); // 2100 / 7s
+-  assert.deepEqual(m.performance.history.map(h => h.modelId), [
+-    'gemini-4-neon', 'gemini-4-hydrogen', 'gemini-4-hydrogen', 'gemini-4-neon',
+-  ]);
++  // Lab multi-model snapshots surface the active model at top level; Neon is active last.
++  assert.equal(m.performance.tps, 150);
++  assert.equal(m.activeModelKey, 'native:gemini-4-neon');
+   assert.equal(m.models.length, 2);
+ 
+   const [planner, executor] = m.models;
+-  assert.deepEqual([planner.id, planner.role, planner.isActive, planner.calls], ['gemini-4-neon', 'planner', true, 2]);
++  assert.deepEqual([planner.key, planner.role, planner.active, planner.calls], ['native:gemini-4-neon', 'planner', true, 2]);
+   assert.equal(planner.performance.tps, 150); // 600 / 4s
+   assert.equal(planner.performance.ttftMedianSeconds, 7);
+   assert.equal(planner.performance.history.length, 2);
+   assert.deepEqual([planner.context.used, planner.context.ceiling], [70_000, 512_000]);
+   assert.equal(planner.totals.cacheHitRate, 83.6); // 92k / 110k
++  assert.equal(planner.cost.totalCalls, planner.calls);
++  assert.ok(planner.cost.total > 0);
+ 
+-  assert.deepEqual([executor.id, executor.role, executor.isActive, executor.calls], ['gemini-4-hydrogen', 'executor', false, 2]);
++  assert.deepEqual([executor.key, executor.role, executor.active, executor.calls], ['native:gemini-4-hydrogen', 'executor', false, 2]);
+   assert.equal(executor.performance.tps, 500); // 1500 / 3s
+   assert.equal(executor.performance.ttftMedianSeconds, 1.5);
+   assert.equal(executor.performance.history.length, 2);
+   assert.deepEqual([executor.context.used, executor.context.ceiling], [60_000, 512_000]);
+   assert.equal(executor.totals.cacheHitRate, 93.6); // 103k / 110k
++  assert.equal(executor.cost.totalCalls, executor.calls);
++  assert.ok(executor.cost.total > 0);
++  assert.ok(Math.abs(planner.cost.total + executor.cost.total - m.cost.total) < 1e-9);
+ 
+   // Non-orchestrator multi-model conversation preserves first-seen order without forced roles.
+   const plainSteps = [
+@@ -655,8 +659,43 @@
+     { input: 2_000, cached: 0, output: 200, ttft: 1, stream: 1, maxContextTokens: 512_000, responseModel: 'gemini-4-hydrogen' },
+   ];
+   const plain = analyzeSteps(plainSteps, { calls: plainCalls });
+-  assert.deepEqual(plain.models.map(x => [x.id, x.role, x.isActive]), [
+-    ['claude-sonnet-4-6', null, false],
+-    ['gemini-4-hydrogen', null, true],
++  assert.deepEqual(plain.models.map(x => [x.key, x.role, x.active]), [
++    ['native:claude-sonnet-4-6', null, false],
++    ['native:gemini-4-hydrogen', null, true],
+   ]);
++});
++
++test('separates a third-party executor from native planner cost and telemetry', () => {
++  const steps = [
++    step(0, { source: 'USER_EXPLICIT', type: 'USER_INPUT' }),
++    step(2, {
++      source: 'MODEL', type: 'PLANNER_RESPONSE',
++      input_tokens: 10_000, cache_read_tokens: 30_000, output_tokens: 200,
++      tool_calls: [{ name: 'exit_plan_mode' }],
++    }),
++    step(10, {
++      source: 'MODEL', type: 'PLANNER_RESPONSE',
++      input_tokens: 5_000, cache_read_tokens: 45_000, output_tokens: 600,
++    }),
++  ];
++  const calls = [
++    { input: 10_000, cached: 30_000, output: 200, ttft: 6, stream: 2, maxContextTokens: 512_000, responseModel: 'gemini-4-neon' },
++    { input: 5_000, cached: 45_000, output: 600, ttft: 2, stream: 1.5, maxContextTokens: 512_000, responseModel: 'gemini-flash-worker-agy', modelDisplayName: 'gpt-6.2-sol · ChatGPT 订阅 (Medium)' },
++  ];
++
++  const m = analyzeSteps(steps, { calls });
++  const planner = m.models.find(view => view.key === 'native:gemini-4-neon');
++  const external = m.models.find(view => view.key === 'ext:gpt-6.2-sol:ChatGPT 订阅');
++  assert.ok(planner);
++  assert.ok(external);
++  assert.equal(planner.role, 'planner');
++  assert.equal(external.role, 'executor');
++  assert.equal(external.isExternal, true);
++  assert.equal(external.source, 'ChatGPT 订阅');
++  assert.equal(external.cost.totalCalls, external.calls);
++  assert.ok(external.cost.total > 0);
++  assert.equal(m.cost.totalCalls, planner.calls);
++  assert.equal(m.cost.tokens.input, planner.totals.input);
++  assert.equal(m.cost.tokens.output, planner.totals.output);
++  assert.equal(m.thirdParty.totalCalls, external.calls);
+ });
