@@ -17,6 +17,8 @@ function reportError(error) {
 }
 
 function updateControls() {
+  $('googleAccounts').querySelectorAll('button').forEach(control => { control.disabled = busy; });
+  $('googleAdd').disabled = busy;
   $('baseUrl').disabled = busy || sourceMode !== 'custom';
   $('apiKey').disabled = busy || sourceMode !== 'custom';
   $('fetchModels').disabled = busy || (sourceMode === 'siwc' && !activeAccount()?.sharing);

@@ -203,12 +203,18 @@ def patch_language_server(app_root):
         env['ANTIGRAVITY_AUTH_SUCCESS_APP'] = 'agy-lab';""",
             "language-server environment",
         )
-        return replace_once(
+        source = replace_once(
             source,
             "            (0, authBootstrap_1.appendWslAuthEnvForwarding)(env);",
             """            (0, authBootstrap_1.appendWslAuthEnvForwarding)(env);
             require('./lab/wsl.cjs').forwardEnv(env);""",
             "WSL environment forwarding",
+        )
+        return replace_once(
+            source,
+            "        const isSelfRestart = code === LS_RESTART_EXIT_CODE && !signal;",
+            "        const isSelfRestart = (code === LS_RESTART_EXIT_CODE && !signal) || await require('./lab/ls-restart.cjs').beforeRestart();",
+            "language-server restart request",
         )
 
     update_file(path, transform)

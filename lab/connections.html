@@ -4,12 +4,24 @@
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>第三方模型连接</title>
+  <title>账号与模型连接</title>
   <link rel="stylesheet" href="connections.css">
   <script defer src="connections-ui.js"></script>
+  <script defer src="google-accounts-ui.js"></script>
 </head>
 <body>
   <main>
+    <section id="googleSection" aria-labelledby="googleTitle" hidden>
+      <h2 id="googleTitle">Google 账号</h2>
+      <div class="card">
+        <ul id="googleAccounts"></ul>
+        <p id="googleEmpty" class="row muted">在主窗口登录 Google 后，账号会显示在这里。</p>
+        <div class="row end">
+          <button id="googleAdd" type="button">添加 Google 账号</button>
+        </div>
+      </div>
+    </section>
+
     <section aria-labelledby="saved">
       <h2 id="saved">已添加的模型</h2>
       <div class="card">

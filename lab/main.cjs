@@ -20,6 +20,7 @@ let pendingTest;
 let pendingSignIn;
 const siwc = require('./siwc.cjs');
 const accounts = require('./siwc-accounts.cjs');
+const google = require('./google-accounts.cjs');
 let discovery;
 
 function register(command, fn) {
@@ -58,6 +59,14 @@ register('siwc-signin', (id, reconsent) => {
 register('siwc-activate', id => accounts.setActive(accountId(id)));
 register('siwc-remove', id => accounts.remove(accountId(id)));
 register('siwc-cancel-signin', () => pendingSignIn?.abort());
+function googleEmail(email) {
+  if (typeof email !== 'string') throw new Error('该 Google 账号已移除。');
+  return email;
+}
+register('google-accounts', google.list);
+register('google-switch', email => google.switchTo(googleEmail(email)));
+register('google-add', google.prepareAdd);
+register('google-remove', email => google.remove(googleEmail(email)));
 register('list', connections.listConnections);
 register('discover', async input => {
   discovery?.abort();
@@ -110,7 +119,7 @@ function openConnections() {
     return;
   }
   settingsWindow = new BrowserWindow({
-    title: '第三方模型连接',
+    title: '账号与模型连接',
     width: 580, height: 680, minWidth: 430, minHeight: 460,
     autoHideMenuBar: true,
     webPreferences: {
@@ -144,7 +153,7 @@ function showModelDiagnostics() {
 
 function labMenuItems() {
   return [
-    { id: 'agy-lab-connections', label: '第三方模型连接…', click: openConnections },
+    { id: 'agy-lab-connections', label: '账号与模型连接…', click: openConnections },
     { id: 'agy-lab-cloud-inventory', label: '显示云端请求清单', click: showCloudInventory },
     { id: 'agy-lab-model-diagnostics', label: '导出模型诊断', click: showModelDiagnostics },
   ];
