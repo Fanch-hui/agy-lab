@@ -52,18 +52,28 @@ const readTail = '$b = $null; $r = [AgyLabCredential]::Read($target, [ref]$b); i
 const writeTail = '$b = [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim()); if ([AgyLabCredential]::Write($target, $user, $b) -ne 0) { exit 1 }';
 const removeTail = '$r = [AgyLabCredential]::Delete($target); if ($r -eq 1168) { exit 44 }; if ($r -ne 0) { exit 1 }';
 
+const CREDENTIAL_TIMEOUT_MS = 15000;
+
 function runPowerShell(script, stdin) {
   return new Promise((resolve, reject) => {
-    const executable = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+    const executable = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const command = Buffer.from(script, 'utf16le').toString('base64');
     const proc = spawn(executable, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', command],
       { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const chunks = [];
+    const timer = setTimeout(() => {
+      try { proc.kill(); } catch {}
+      reject(new Error('Windows credential helper timed out'));
+    }, CREDENTIAL_TIMEOUT_MS);
     proc.stdout.on('data', chunk => chunks.push(chunk));
     proc.stderr.resume();
-    proc.on('error', reject);
-    proc.stdin.on('error', reject);
-    proc.on('close', code => resolve({ code, stdout: Buffer.concat(chunks).toString('utf8') }));
+    proc.on('error', error => { clearTimeout(timer); reject(error); });
+    proc.stdin.on('error', error => { clearTimeout(timer); reject(error); });
+    proc.on('close', code => {
+      clearTimeout(timer);
+      resolve({ code, stdout: Buffer.concat(chunks).toString('utf8') });
+    });
     proc.stdin.end(stdin);
   });
 }

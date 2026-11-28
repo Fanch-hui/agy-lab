@@ -32,7 +32,7 @@ function createRestarter(getProcess, terminate = defaultTerminate) {
         reject(error);
       };
       try {
-        request.timer = setTimeout(() => proc.kill('SIGKILL'), 5000);
+        request.timer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 5000);
         Promise.resolve(terminate(proc)).catch(failed);
       } catch (error) {
         failed(error);

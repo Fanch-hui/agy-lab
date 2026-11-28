@@ -6,6 +6,7 @@
 // when the history is sent back to the same provider.
 const { createHash } = require('node:crypto');
 const fs = require('node:fs');
+const { writeFileAtomic } = require('./atomic-file.cjs');
 
 const PLACEHOLDER_SIGNATURE = 'skip_thought_signature_validator';
 const MAX_ENTRIES = 5000;
@@ -18,7 +19,19 @@ function callKeys(call) {
 class SignatureStore {
   constructor(file) {
     this.file = file;
-    this.entries = new Map(file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : []);
+    this.entries = new Map();
+    if (!file || !fs.existsSync(file)) return;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (!Array.isArray(parsed)) throw new Error('invalid signature store');
+      for (const entry of parsed) {
+        if (Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && typeof entry[1] === 'string') {
+          this.entries.set(entry[0], entry[1]);
+        }
+      }
+    } catch (error) {
+      console.error('无法读取签名缓存，已重置：', error.message);
+    }
   }
 
   // Replaces provider signatures on outgoing tool calls with the placeholder.
@@ -50,8 +63,11 @@ class SignatureStore {
   save() {
     while (this.entries.size > MAX_ENTRIES) this.entries.delete(this.entries.keys().next().value);
     if (!this.file) return;
-    fs.writeFileSync(this.file + '.tmp', JSON.stringify([...this.entries]), { mode: 0o600 });
-    fs.renameSync(this.file + '.tmp', this.file);
+    try {
+      writeFileAtomic(this.file, JSON.stringify([...this.entries]));
+    } catch (error) {
+      console.error('无法保存签名缓存：', error.message);
+    }
   }
 }
 

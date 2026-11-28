@@ -53,3 +53,11 @@ test('reports provider errors and rejects unsupported model-list responses', asy
   await assert.rejects(discoverModels({ baseUrl }), /HTTP 401/);
   await assert.rejects(discoverModels({ baseUrl }), /模型列表格式不受支持/);
 });
+
+test('rejects HTML or non-JSON 200 responses with a clear format error', async context => {
+  const baseUrl = await serverFor((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html' });
+    response.end('<html>login</html>');
+  }, context);
+  await assert.rejects(discoverModels({ baseUrl }), /模型列表格式不受支持/);
+});

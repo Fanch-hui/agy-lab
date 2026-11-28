@@ -1,9 +1,9 @@
 'use strict';
 const fs = require('node:fs');
-const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { once } = require('node:events');
+const { writeFileAtomic } = require('./atomic-file.cjs');
 const SIWC_ISSUER = 'https://auth.openai.com';
 const SIWC_RESOURCE_URL = 'https://api.openai.com/v1';
 const sharing = 'chatgpt.tokens.use.direct';
@@ -71,12 +71,8 @@ function createSiwcAuth({ storageFile, encryption, issuer = SIWC_ISSUER, resourc
   }
   function write(value) {
     storageReady();
-    fs.mkdirSync(path.dirname(storageFile), { recursive: true, mode: 0o700 });
-    const temp = `${storageFile}.${crypto.randomUUID()}.tmp`;
-    try {
-      fs.writeFileSync(temp, JSON.stringify({ version: 1, encrypted: Buffer.from(encryption.encrypt(JSON.stringify(value))).toString('base64') }), { flag: 'wx', mode: 0o600 });
-      fs.renameSync(temp, storageFile);
-    } finally { fs.rmSync(temp, { force: true }); }
+    const encrypted = Buffer.from(encryption.encrypt(JSON.stringify(value))).toString('base64');
+    writeFileAtomic(storageFile, JSON.stringify({ version: 1, encrypted }));
   }
   function getStatus() {
     const value = read();
@@ -114,18 +110,24 @@ function createSiwcAuth({ storageFile, encryption, issuer = SIWC_ISSUER, resourc
       [header, claims] = pieces.slice(0, 2).map(p => JSON.parse(Buffer.from(p, 'base64url')));
     } catch { throw invalid(); }
     if (header?.alg !== 'RS256' || (header.kid !== undefined && typeof header.kid !== 'string') || header.crit !== undefined || !claims) throw invalid();
+    const find = set => {
+      const eligible = set?.keys?.filter(k => k?.kty === 'RSA' && (!k.alg || k.alg === 'RS256') && (!k.use || k.use === 'sig') && (!k.key_ops || k.key_ops.includes('verify'))) || [];
+      return header.kid === undefined ? (eligible.length === 1 ? eligible[0] : undefined) : eligible.find(k => k.kid === header.kid);
+    };
+    let jwk = find(keys);
+    if (!jwk) {
+      try {
+        const { jwks_uri } = await discover();
+        keys = await json(jwks_uri);
+      } catch { throw fail('identity_verification_unavailable', '暂时无法获取 ChatGPT 签名密钥，请稍后重试。'); }
+      jwk = find(keys);
+    }
+    if (!jwk) throw invalid();
     let key;
     try {
-      const { jwks_uri } = await discover();
-      const find = set => {
-        const eligible = set?.keys?.filter(k => k?.kty === 'RSA' && (!k.alg || k.alg === 'RS256') && (!k.use || k.use === 'sig') && (!k.key_ops || k.key_ops.includes('verify'))) || [];
-        return header.kid === undefined ? (eligible.length === 1 ? eligible[0] : undefined) : eligible.find(k => k.kid === header.kid);
-      };
-      key = find(keys);
-      if (!key) key = find(keys = await json(jwks_uri));
-      key = crypto.createPublicKey({ key, format: 'jwk' });
-      if (key.asymmetricKeyDetails.modulusLength < 2048) throw new Error();
-    } catch { throw fail('identity_verification_unavailable', '暂时无法获取 ChatGPT 签名密钥，请稍后重试。'); }
+      key = crypto.createPublicKey({ key: jwk, format: 'jwk' });
+    } catch { throw invalid(); }
+    if (!(key.asymmetricKeyDetails?.modulusLength >= 2048)) throw invalid();
     if (!crypto.verify('RSA-SHA256', Buffer.from(pieces.slice(0, 2).join('.')), key, Buffer.from(pieces[2], 'base64url'))) throw invalid();
     const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
     if (claims.iss !== issuer || !aud.includes(clientId) || aud.some(a => typeof a !== 'string') ||

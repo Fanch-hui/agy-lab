@@ -50,16 +50,21 @@ function createNativeRoute({ listConnections, getConnection, generate, slotTable
 
   // Resolves with the provider's token usage and the shape of the cacheable prefix, for diagnosis.
   async function handle(envelope, response) {
-    const variant = resolveVariant(envelope.model, listConnections());
     const controller = new AbortController();
     response.on('close', () => {
       if (!response.writableFinished) controller.abort();
     });
+    let variant;
     let connection;
     try {
+      variant = resolveVariant(envelope.model, listConnections());
+      if (!variant) {
+        writeError(response, 404, '该外部模型连接已移除。');
+        return;
+      }
       connection = await getConnection(variant.connectionId, controller.signal);
     } catch (error) {
-      writeError(response, 400, error.message);
+      writeError(response, variant ? 400 : 500, error.message);
       return;
     }
     const provider = `${connection.model}（${connection.authType === 'siwc' ? 'ChatGPT 订阅' : new URL(connection.baseUrl).host}）`;

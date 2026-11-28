@@ -155,3 +155,35 @@ test('uses the fixed subscription endpoint for catalog and Responses without API
   await assert.rejects(run(), /额度已达上限/);
   assert.equal(mock.mock.callCount(), 4);
 });
+
+test('treats unknown signing key kid as invalid_id_token when JWKS fetch succeeds', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-siwc-kid-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const encode = x => Buffer.from(JSON.stringify(x)).toString('base64url');
+  let savedNonce;
+  const auth = createSiwcAuth({
+    issuer,
+    storageFile: path.join(dir, 'state'),
+    encryption: { isAvailable: () => true, encrypt: s => Buffer.from(s), decrypt: b => b.toString() },
+    async fetch(url) {
+      const endpoint = new URL(url).pathname;
+      if (endpoint.startsWith('/.well-known')) {
+        return Response.json({ issuer, authorization_endpoint: issuer + '/authorize', token_endpoint: issuer + '/token', jwks_uri: issuer + '/keys' });
+      }
+      if (endpoint === '/keys') {
+        return Response.json({ keys: [{ ...pair.publicKey.export({ format: 'jwk' }), kid: 'known-kid' }] });
+      }
+      const header = encode({ alg: 'RS256', kid: 'unknown-kid' });
+      const claims = encode({ iss: issuer, sub: 'account', aud: 'assigned', nonce: savedNonce, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 600 });
+      const token = `${header}.${claims}.${crypto.sign('RSA-SHA256', Buffer.from(`${header}.${claims}`), pair.privateKey).toString('base64url')}`;
+      return Response.json({ access_token: 't', refresh_token: 'r', token_type: 'Bearer', expires_in: 120, scope, id_token: token });
+    },
+    async openBrowser(url) {
+      const q = new URL(url).searchParams;
+      savedNonce = q.get('nonce');
+      const reply = await fetch(`${q.get('redirect_uri')}?state=${q.get('state')}&code=c&client_id=assigned`);
+      await reply.text();
+    },
+  });
+  await assert.rejects(auth.signIn(), { code: 'invalid_id_token' });
+});

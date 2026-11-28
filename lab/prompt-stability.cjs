@@ -10,6 +10,7 @@
 // - keeps the first system prompt of a session as the system message and states later
 //   changes in a developer message appended after the history.
 const fs = require('node:fs');
+const { writeFileAtomic } = require('./atomic-file.cjs');
 
 const TOOL_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_SESSIONS = 100;
@@ -50,13 +51,23 @@ function systemDifference(base, current) {
 class PromptStability {
   constructor(file) {
     this.file = file;
-    this.catalogs = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+    this.catalogs = {};
+    if (file && fs.existsSync(file)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid tool catalog');
+        this.catalogs = parsed;
+      } catch (error) {
+        console.error('无法读取外部模型工具目录，已重置：', error.message);
+      }
+    }
     this.sessions = new Map();
   }
 
   // Returns the stable tool list for a connection after merging the tools of this request.
   stableTools(connectionId, declarations, now = Date.now()) {
-    const catalog = (this.catalogs[connectionId] ||= []);
+    if (!Array.isArray(this.catalogs[connectionId])) this.catalogs[connectionId] = [];
+    const catalog = this.catalogs[connectionId];
     let changed = false;
     for (const declaration of declarations) {
       const entry = catalog.find(item => item.declaration.name === declaration.name);
@@ -118,10 +129,8 @@ class PromptStability {
 
   save() {
     if (!this.file) return;
-    const temporary = `${this.file}.${process.pid}.tmp`;
     try {
-      fs.writeFileSync(temporary, JSON.stringify(this.catalogs) + '\n', { mode: 0o600 });
-      fs.renameSync(temporary, this.file);
+      writeFileAtomic(this.file, JSON.stringify(this.catalogs) + '\n');
     } catch (error) {
       // The catalogue only improves caching; a failed write must not interrupt the request.
       console.error('无法保存外部模型工具目录：', error.message);

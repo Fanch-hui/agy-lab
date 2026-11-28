@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const crypto = require('node:crypto');
+const { writeFileAtomic } = require('./atomic-file.cjs');
 const { labSlot } = require('./google-credential-slot.cjs');
 const restarter = require('./ls-restart.cjs');
 
@@ -43,13 +43,8 @@ function createGoogleAccounts({ storageFile, encryption, slot, restartWith }) {
   }
   function writeStore(data) {
     storageReady();
-    fs.mkdirSync(path.dirname(storageFile), { recursive: true, mode: 0o700 });
-    const temp = `${storageFile}.${crypto.randomUUID()}.tmp`;
-    try {
-      const encrypted = Buffer.from(encryption.encrypt(JSON.stringify(data))).toString('base64');
-      fs.writeFileSync(temp, JSON.stringify({ version: 1, encrypted }), { flag: 'wx', mode: 0o600 });
-      fs.renameSync(temp, storageFile);
-    } finally { fs.rmSync(temp, { force: true }); }
+    const encrypted = Buffer.from(encryption.encrypt(JSON.stringify(data))).toString('base64');
+    writeFileAtomic(storageFile, JSON.stringify({ version: 1, encrypted }));
   }
   async function sync() {
     const data = readStore();

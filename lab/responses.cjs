@@ -17,10 +17,15 @@ function signatureFrom(signature) {
   if (!signature) return undefined;
   const decoded = Buffer.from(signature, 'base64').toString();
   if (!decoded.startsWith(SIGNATURE_PREFIX)) return undefined;
-  const metadata = JSON.parse(decoded.slice(SIGNATURE_PREFIX.length));
-  if (metadata.call?.type !== 'function_call' || !metadata.call.call_id ||
+  let metadata;
+  try {
+    metadata = JSON.parse(decoded.slice(SIGNATURE_PREFIX.length));
+  } catch {
+    throw new Error('The conversation contains invalid encrypted reasoning');
+  }
+  if (metadata?.call?.type !== 'function_call' || !metadata.call.call_id ||
       !Array.isArray(metadata.prefix) || metadata.prefix.some(item =>
-        item.type !== 'message' && (item.type !== 'reasoning' || !item.encrypted_content))) {
+        item?.type !== 'message' && (item?.type !== 'reasoning' || !item.encrypted_content))) {
     throw new Error('The conversation contains invalid encrypted reasoning');
   }
   return metadata;
@@ -192,7 +197,12 @@ function toolParts(output) {
     }
     if (item.type !== 'function_call') throw new Error(`Unsupported OpenAI output item: ${item.type}`);
     if (!item.call_id || !item.name) throw new Error('OpenAI returned an incomplete function call');
-    const args = JSON.parse(item.arguments || '{}');
+    let args;
+    try {
+      args = JSON.parse(item.arguments || '{}');
+    } catch {
+      throw new Error(`OpenAI returned invalid arguments for tool ${item.name}`);
+    }
     if (!args || Array.isArray(args) || typeof args !== 'object') {
       throw new Error(`OpenAI returned non-object arguments for tool ${item.name}`);
     }
@@ -251,11 +261,20 @@ async function generateResponses({ connection, request, signal, onChunk, reasoni
   let completed;
   for await (const data of sseData(response.body)) {
     if (data === '[DONE]') break;
-    const event = JSON.parse(data);
+    let event;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      throw new Error('The model provider returned invalid stream data');
+    }
     if (event.type === 'response.output_text.delta' || event.type === 'response.refusal.delta') {
-      await onChunk(responseChunk([{ text: event.delta }]));
+      if (typeof event.delta === 'string' && event.delta) {
+        await onChunk(responseChunk([{ text: event.delta }]));
+      }
     } else if (event.type === 'response.reasoning_summary_text.delta') {
-      await onChunk(responseChunk([{ text: event.delta, thought: true }]));
+      if (typeof event.delta === 'string' && event.delta) {
+        await onChunk(responseChunk([{ text: event.delta, thought: true }]));
+      }
     } else if (event.type === 'response.completed' || event.type === 'response.incomplete') {
       if (finished) throw new Error('OpenAI returned multiple finish events');
       await emitCompleted(event.response, onChunk);

@@ -19,6 +19,9 @@ function reportedContext(model) {
 }
 
 async function discoverModels({ baseUrl, apiKey, authType }, signal) {
+  if (authType !== 'siwc' && (typeof baseUrl !== 'string' || !baseUrl.trim())) {
+    throw new Error('请输入有效的接口根地址。');
+  }
   const url = (authType === 'siwc' ? SIWC_RESOURCE_URL : normalizeBaseUrl(baseUrl.trim())) + '/models';
   const headers = { accept: 'application/json' };
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
@@ -40,8 +43,8 @@ async function discoverModels({ baseUrl, apiKey, authType }, signal) {
     return [...entries.values()].sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
   }
   if (!response.ok) throw new Error(`获取模型失败：服务返回 HTTP ${response.status}`);
-  const result = await response.json();
-  if (!Array.isArray(result.data)) throw new Error('服务返回的模型列表格式不受支持。');
+  const result = await response.json().catch(() => null);
+  if (!Array.isArray(result?.data)) throw new Error('服务返回的模型列表格式不受支持。');
   const models = new Map();
   for (const model of result.data) {
     if (typeof model?.id !== 'string' || !model.id.trim() || models.has(model.id)) continue;
