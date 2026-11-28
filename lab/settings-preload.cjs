@@ -1,10 +1,12 @@
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('modelConnections', {
-  siwcStatus: () => ipcRenderer.invoke('agy-lab:siwc-status'),
-  siwcSignIn: reconsent => ipcRenderer.invoke('agy-lab:siwc-signin', reconsent),
+  siwcAccounts: () => ipcRenderer.invoke('agy-lab:siwc-accounts'),
+  siwcAdd: () => ipcRenderer.invoke('agy-lab:siwc-add'),
+  siwcSignIn: (id, reconsent) => ipcRenderer.invoke('agy-lab:siwc-signin', id, reconsent),
+  siwcActivate: id => ipcRenderer.invoke('agy-lab:siwc-activate', id),
+  siwcRemove: id => ipcRenderer.invoke('agy-lab:siwc-remove', id),
   siwcCancelSignIn: () => ipcRenderer.invoke('agy-lab:siwc-cancel-signin'),
-  siwcSignOut: () => ipcRenderer.invoke('agy-lab:siwc-signout'),
   list: () => ipcRenderer.invoke('agy-lab:list'),
   discover: input => ipcRenderer.invoke('agy-lab:discover', input),
   saveDiscovered: input => ipcRenderer.invoke('agy-lab:save-discovered', input),

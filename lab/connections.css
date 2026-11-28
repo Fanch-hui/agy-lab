@@ -41,7 +41,7 @@ section, form { margin-bottom: 20px; }
 .card { background: var(--card); border-radius: 10px; box-shadow: 0 0 0 .5px var(--line), 0 1px 2px rgba(0, 0, 0, .04); }
 .card + .card { margin-top: 10px; }
 .row { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 14px; }
-.row + .row, #list li + li { border-top: 1px solid var(--line); }
+.row + .row, #list li + li, #siwcAccounts li + li, #siwcAccounts:not(:empty) ~ .row.end { border-top: 1px solid var(--line); }
 .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .end { justify-content: flex-end; }
 
@@ -65,13 +65,15 @@ button.primary { color: #fff; background: var(--accent); box-shadow: none; }
 button.quiet { background: transparent; box-shadow: none; color: var(--accent); padding: 0 6px; }
 button.danger { color: var(--danger); }
 
-#list { list-style: none; margin: 0; padding: 0; }
-#list li { display: flex; align-items: center; gap: 2px; min-height: 48px; padding: 6px 10px 6px 14px; }
-#list .name { font-weight: 500; }
-#list .address { font-size: 11px; color: var(--muted); }
+#list, #siwcAccounts { list-style: none; margin: 0; padding: 0; }
+#list li, #siwcAccounts li { display: flex; align-items: center; gap: 2px; min-height: 48px; padding: 6px 10px 6px 14px; }
+#list .name, #siwcAccounts .name { font-weight: 500; }
+#list .address, #siwcAccounts .address { font-size: 11px; color: var(--muted); }
+#siwcAccounts .current { font-size: 11px; color: var(--muted); margin-right: 6px; }
 #list .context { display: flex; align-items: center; gap: 4px; margin-right: 6px; font-size: 11px; color: var(--muted); }
 #list .context input { width: 56px; height: 22px; padding: 0 6px; text-align: right; }
 #list:not(:empty) + #empty { display: none; }
+#siwcEmpty[hidden] { display: none; }
 
 .check { display: flex; align-items: center; gap: 8px; cursor: default; }
 .check input { margin: 0; accent-color: var(--accent); }

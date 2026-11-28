@@ -8,6 +8,7 @@ const { normalizeBaseUrl } = require('./provider.cjs');
 const { discoverModels: fetchModels, normalizeReasoningEfforts } = require('./model-discovery.cjs');
 
 const siwc = require('./siwc.cjs');
+const accounts = require('./siwc-accounts.cjs');
 const { DEFAULT_CONTEXT_TOKENS, contextTokensOf } = require('./native-models.cjs');
 
 function filename() {
@@ -67,12 +68,12 @@ async function resolveConnection(id, signal) {
   const row = records().find(item => item.id === id);
   if (!row) throw new Error('该连接已移除。');
   if (row.authType !== 'siwc') return getConnection(id);
-  return { ...publicRow(row), apiKey: await siwc.getAccessToken(signal) };
+  return { ...publicRow(row), apiKey: await accounts.getAccessToken(signal) };
 }
 
 async function discoverModels(input, signal) {
   const connection = input.connectionId ? await resolveConnection(input.connectionId, signal)
-    : input.authType === 'siwc' ? { authType: 'siwc', baseUrl: siwc.SIWC_RESOURCE_URL, apiKey: await siwc.getAccessToken(signal) } : input;
+    : input.authType === 'siwc' ? { authType: 'siwc', baseUrl: siwc.SIWC_RESOURCE_URL, apiKey: await accounts.getAccessToken(signal) } : input;
   return fetchModels(connection, signal);
 }
 

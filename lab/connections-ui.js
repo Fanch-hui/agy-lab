@@ -5,10 +5,12 @@ const $ = id => document.getElementById(id);
 let busy = false;
 let sourceId;
 let sourceMode = 'custom';
-let session = {};
+let accounts = [];
 let signingIn = false;
 let availableModels = [];
 const selectedModels = new Set();
+const activeAccount = () => accounts.find(account => account.active);
+const accountName = account => account.account?.email || account.account?.name || 'ChatGPT 账号';
 
 function reportError(error) {
   $('status').textContent = error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
@@ -17,12 +19,11 @@ function reportError(error) {
 function updateControls() {
   $('baseUrl').disabled = busy || sourceMode !== 'custom';
   $('apiKey').disabled = busy || sourceMode !== 'custom';
-  $('fetchModels').disabled = busy || (sourceMode === 'siwc' && !session.sharing);
-  $('siwcSignIn').disabled = busy;
+  $('fetchModels').disabled = busy || (sourceMode === 'siwc' && !activeAccount()?.sharing);
+  $('siwcAdd').disabled = busy;
   $('siwcCancel').hidden = !signingIn;
-  $('siwcModels').disabled = busy || !session.sharing;
-  $('siwcSignOut').hidden = !['connected', 'reauth_required'].includes(session.status);
-  $('siwcSignOut').disabled = busy;
+  $('siwcModels').disabled = busy || !activeAccount()?.sharing;
+  $('siwcAccounts').querySelectorAll('button').forEach(control => { control.disabled = busy; });
   $('newSource').hidden = sourceMode === 'custom';
   $('newSource').disabled = busy;
   $('picker').hidden = !availableModels.length;
@@ -138,7 +139,7 @@ async function fetchModels() {
   const input = sourceInput();
   clearModels();
   await runBusy('正在获取模型…', async () => {
-    availableModels = await api.discover(input).finally(() => { if (input.authType === 'siwc') return refreshSession(); });
+    availableModels = await api.discover(input).finally(() => { if (input.authType === 'siwc' || sourceMode === 'siwc') return refreshAccounts(); });
     renderModels();
     $('status').textContent = availableModels.length ? '' : '服务未返回可用模型。';
   });
@@ -170,7 +171,7 @@ async function renderConnections() {
     title.append(name, address);
     const add = button('获取模型', () => useSavedSource(row));
     const test = mode => runBusy('正在测试 ' + row.model + '…', async () => {
-      const result = await api.test(row.id, mode).finally(() => { if (row.authType === 'siwc') return refreshSession(); });
+      const result = await api.test(row.id, mode).finally(() => { if (row.authType === 'siwc') return refreshAccounts(); });
       $('status').textContent = row.model + '：' + result;
     });
     const chat = button('测试对话', () => test('chat'));
@@ -191,35 +192,62 @@ async function renderConnections() {
   }
 }
 
-function renderSession(next) {
-  session = next;
-  const account = next.account?.email || next.account?.name;
-  $('siwcStatus').textContent = next.status === 'connected'
-    ? `${account ? account + ' · ' : ''}${next.sharing ? '已授权订阅共享' : '已登录，未授权订阅共享'}`
-    : next.status === 'reauth_required' ? '登录已失效' : '未登录';
-  $('siwcSignIn').textContent = next.status === 'connected' ? '重新授权' : next.status === 'reauth_required' ? '重新登录' : 'Sign in with ChatGPT';
+function renderAccounts(next) {
+  accounts = next;
+  $('siwcAccounts').replaceChildren(...accounts.map(account => {
+    const item = document.createElement('li');
+    const title = document.createElement('div');
+    const name = document.createElement('div');
+    const address = document.createElement('div');
+    title.className = 'grow';
+    name.className = 'name';
+    address.className = 'address';
+    if (account.active) {
+      const current = document.createElement('span');
+      current.className = 'current';
+      current.textContent = '当前';
+      name.append(current);
+    }
+    name.append(document.createTextNode(accountName(account)));
+    address.textContent = account.status === 'connected'
+      ? (account.sharing ? '已授权订阅共享' : '已登录，未授权订阅共享') : '登录已失效';
+    title.append(name, address);
+    item.append(title);
+    if (!account.active) item.append(button('切换', () => runBusy('正在切换账号…', async () => {
+      renderAccounts(await api.siwcActivate(account.id));
+      if (sourceMode === 'siwc') clearModels();
+      $('status').textContent = `已切换到 ${accountName(account)}，后续请求使用该账号。`;
+    })));
+    item.append(button(account.status === 'connected' ? '重新授权' : '重新登录',
+      () => signIn(() => api.siwcSignIn(account.id, account.status === 'connected'))));
+    item.append(button('移除', () => runBusy('正在移除 ChatGPT 账号…', async () => {
+      const result = await api.siwcRemove(account.id);
+      renderAccounts(result.accounts);
+      if (sourceMode === 'siwc') clearModels();
+      $('status').textContent = result.warning || `已移除 ${accountName(account)}。`;
+    }), 'quiet danger'));
+    return item;
+  }));
+  $('siwcEmpty').hidden = accounts.length > 0;
+  $('siwcAdd').textContent = accounts.length ? '添加 ChatGPT 账号' : 'Sign in with ChatGPT';
   updateControls();
 }
-async function refreshSession() {
-  try { renderSession(await api.siwcStatus()); } catch { /* Preserve the request result. */ }
+async function refreshAccounts() {
+  try { renderAccounts(await api.siwcAccounts()); } catch { /* Preserve the request result. */ }
 }
-
-$('siwcSignIn').onclick = () => runBusy('请在系统浏览器完成 ChatGPT 授权…', async () => {
-  signingIn = true;
-  updateControls();
-  try {
-    renderSession(await api.siwcSignIn(session.status === 'connected'));
-    if (sourceMode === 'siwc') clearModels();
-    $('status').textContent = session.sharing ? '已完成授权，可以获取订阅模型。' : '已登录，但未授权订阅共享。';
-  } finally { signingIn = false; await refreshSession(); }
-});
+function signIn(operation) {
+  return runBusy('请在系统浏览器完成 ChatGPT 授权…', async () => {
+    signingIn = true;
+    updateControls();
+    try {
+      renderAccounts(await operation());
+      if (sourceMode === 'siwc') clearModels();
+      $('status').textContent = '已完成 ChatGPT 登录。';
+    } finally { signingIn = false; await refreshAccounts(); }
+  });
+}
+$('siwcAdd').onclick = () => signIn(() => api.siwcAdd());
 $('siwcCancel').onclick = () => api.siwcCancelSignIn().catch(reportError);
-$('siwcSignOut').onclick = () => runBusy('正在退出 ChatGPT…', async () => {
-  const result = await api.siwcSignOut();
-  renderSession(result);
-  if (sourceMode === 'siwc') clearModels();
-  $('status').textContent = result.warning || '已退出 ChatGPT。';
-});
 $('siwcModels').onclick = () => {
   sourceMode = 'siwc';
   sourceId = undefined;
@@ -271,5 +299,5 @@ $('form').onsubmit = event => {
     $('status').textContent = `已添加 ${saved.length} 个模型。重启 Antigravity Lab 后，可在模型菜单和 Orchestrator Settings 中选择。`;
   });
 };
-Promise.all([renderConnections(), api.siwcStatus().then(renderSession)]).catch(reportError);
+Promise.all([renderConnections(), api.siwcAccounts().then(renderAccounts)]).catch(reportError);
 updateControls();

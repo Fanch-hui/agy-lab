@@ -19,6 +19,7 @@ let settingsWindow;
 let pendingTest;
 let pendingSignIn;
 const siwc = require('./siwc.cjs');
+const accounts = require('./siwc-accounts.cjs');
 let discovery;
 
 function register(command, fn) {
@@ -32,21 +33,31 @@ function register(command, fn) {
   });
 }
 
-register('siwc-status', siwc.getStatus);
-register('siwc-signin', async reconsent => {
+async function runSiwcSignIn(operation) {
   if (pendingSignIn) throw new Error('正在登录 ChatGPT。');
   const controller = new AbortController();
   pendingSignIn = controller;
   try {
-    return await siwc.signIn({ signal: controller.signal, reconsent: reconsent === true, openBrowser: url => {
+    return await operation({ signal: controller.signal, openBrowser: url => {
       const target = new URL(url);
       if (target.origin !== siwc.SIWC_ISSUER) throw new Error('无效的 ChatGPT 授权地址。');
       return shell.openExternal(target.href);
     } });
   } finally { pendingSignIn = undefined; }
+}
+function accountId(id) {
+  if (typeof id !== 'string') throw new Error('该 ChatGPT 账号已移除。');
+  return id;
+}
+register('siwc-accounts', accounts.list);
+register('siwc-add', () => runSiwcSignIn(options => accounts.add(options)));
+register('siwc-signin', (id, reconsent) => {
+  accountId(id);
+  return runSiwcSignIn(options => accounts.signIn(id, { ...options, reconsent: reconsent === true }));
 });
+register('siwc-activate', id => accounts.setActive(accountId(id)));
+register('siwc-remove', id => accounts.remove(accountId(id)));
 register('siwc-cancel-signin', () => pendingSignIn?.abort());
-register('siwc-signout', () => siwc.signOut());
 register('list', connections.listConnections);
 register('discover', async input => {
   discovery?.abort();

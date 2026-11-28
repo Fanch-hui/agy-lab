@@ -80,6 +80,7 @@ function fixture(t, options = {}) {
 test('verifies OAuth, encrypts credentials, checkpoints rotation and revokes', async t => {
   const { auth, state, storageFile } = fixture(t);
   assert.deepEqual(await auth.signIn(), { status: 'connected', sharing: true, account: {} });
+  assert.equal(auth.getSubject(), 'account');
   if (process.platform !== 'win32') assert.equal(fs.statSync(storageFile).mode & 0o777, 0o600);
   const before = fs.readFileSync(storageFile, 'utf8');
   assert.doesNotMatch(before, /first-token|first-refresh|assigned/);

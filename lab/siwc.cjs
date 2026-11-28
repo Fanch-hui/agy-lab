@@ -307,17 +307,6 @@ function createSiwcAuth({ storageFile, encryption, issuer = SIWC_ISSUER, resourc
     const warning = !remoteRevoked && (token || saved.credentials) ? '本机已退出；无法确认远端撤销，请在 ChatGPT 设置中断开连接。' : undefined;
     return { ...getStatus(), remoteRevoked, warning };
   }
-  return { signIn, signOut, getStatus, getAccessToken };
+  return { signIn, signOut, getStatus, getSubject: () => read().subject, getAccessToken };
 }
-let singleton;
-function defaults() {
-  if (!singleton) {
-    const { app, safeStorage } = require('electron');
-    singleton = createSiwcAuth({ storageFile: path.join(app.getPath('userData'), 'chatgpt-siwc.json'), encryption: {
-      isAvailable: () => safeStorage.isEncryptionAvailable(), encrypt: s => safeStorage.encryptString(s), decrypt: b => safeStorage.decryptString(b),
-    } });
-  }
-  return singleton;
-}
-module.exports = { createSiwcAuth, SIWC_RESOURCE_URL, SIWC_ISSUER, formatSiwcError,
-  ...Object.fromEntries(['getStatus', 'signIn', 'signOut', 'getAccessToken'].map(key => [key, (...args) => defaults()[key](...args)])) };
+module.exports = { createSiwcAuth, SIWC_RESOURCE_URL, SIWC_ISSUER, formatSiwcError };

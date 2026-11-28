@@ -75,7 +75,7 @@ test('keeps SIWC and API key connections separate for the same model', async con
     };
     connections = require(modulePath);
   } finally { Module._load = originalLoad; delete require.cache[modulePath]; }
-  const siwc = require('../lab/siwc.cjs');
+  const accounts = require('../lab/siwc-accounts.cjs');
   const baseUrl = 'https://api.openai.com/v1';
   const models = [{ id: 'gpt-5.4' }];
   const [key] = connections.saveDiscoveredModels({ baseUrl, apiKey: 'test-key', models });
@@ -86,11 +86,17 @@ test('keeps SIWC and API key connections separate for the same model', async con
   assert.throws(() => connections.getConnection(subscription.id), /异步/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(directory, 'model-connections.json'))).find(row => row.id === subscription.id).key, undefined);
   const signal = new AbortController().signal;
-  context.mock.method(siwc, 'getAccessToken', async current => {
+  context.mock.method(accounts, 'getAccessToken', async current => {
     assert.equal(current, signal);
     return 'test-oauth-token';
   });
   assert.deepEqual(await connections.resolveConnection(subscription.id, signal), {
     id: subscription.id, model: 'gpt-5.4', authType: 'siwc', baseUrl, contextTokens: 512000, apiKey: 'test-oauth-token',
   });
+  context.mock.method(globalThis, 'fetch', async (url, init) => {
+    assert.equal(url, baseUrl + '/models');
+    assert.equal(init.headers.authorization, 'Bearer test-oauth-token');
+    return Response.json({ models: [{ slug: 'gpt-5.4', visibility: 'list' }] });
+  });
+  assert.deepEqual(await connections.discoverModels({ authType: 'siwc' }, signal), [{ id: 'gpt-5.4' }]);
 });
