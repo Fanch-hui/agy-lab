@@ -82,6 +82,23 @@ python3 scripts/build_app.py --source /Applications/Antigravity.app --zh /path/t
 
 构建先运行汉化项目的界面兼容性检查，不通过即停止；Antigravity 出新版本后，需要等 antigravity-zh 适配该版本才能带中文界面构建。翻译脚本只在应用主界面文档准备就绪后运行，不开启调试端口，也不作用于内置浏览器标签页。
 
+### 可选：上下文与用量面板
+
+[agy-context-speed](https://github.com/Fanch-hui/agy-context-speed) 是同一作者的 Antigravity 侧边面板插件，显示上下文占用、生成速度、缓存命中和用量。它的安装脚本面向原版应用；Lab 的数据目录是独立的，所以本仓库提供一份补丁 `plugins/agy-context-speed.lab.patch`，让插件只读取 Lab 自己的会话，并增加第三方模型的统计（本会话、本周、本月的用量和等价 API 费用估算，不是订阅账单）。补丁对应上游提交 `58ea9dd`：
+
+```sh
+git clone https://github.com/Fanch-hui/agy-context-speed.git
+cd agy-context-speed
+git apply -p1 /path/to/agy-lab/plugins/agy-context-speed.lab.patch
+```
+
+然后在 Lab 完全退出的状态下手动安装到 Lab 的数据目录（macOS 为 `~/Library/Application Support/AGY Lab/gemini/config`，Windows 为 `%APPDATA%\AGY Lab\gemini\config`）：
+
+1. 把 `plugin.json`、`sidecars/` 和 `README.md` 复制到该目录下的 `plugins/agy-context-speed/`。
+2. 在该目录的 `config.json` 里加入 `"sidecars": { "agy-context-speed/monitor": { "enabled": true } }`（已有 `sidecars` 时只添加这一项）。
+
+不要对打过补丁的副本运行插件自带的安装脚本，它会装到原版应用的 `~/.gemini`。重新打开 Lab 后，在对话右上角的 **⋮ → Extensions → Context & Speed** 打开面板。WSL 会话的数据在发行版里，面板读不到。
+
 ### 验证与常见问题
 
 - `npm test` 运行自动化测试，不需要 Antigravity 安装包或真实账号。测试中的本地 HTTP 服务需要能访问 `127.0.0.1`。真实登录、界面和 Orchestrator 交接需手动验收。
@@ -95,4 +112,4 @@ python3 scripts/build_app.py --source /Applications/Antigravity.app --zh /path/t
 
 ## 许可证
 
-本项目自有源码采用 [MIT 许可证](LICENSE)。Antigravity、Electron 和 antigravity-zh 不因本仓库的许可而改变各自的授权条款。
+本项目自有源码采用 [MIT 许可证](LICENSE)。Antigravity、Electron、antigravity-zh 和 agy-context-speed 不因本仓库的许可而改变各自的授权条款。

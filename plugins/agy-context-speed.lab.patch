@@ -1,0 +1,2190 @@
+diff -ruN agy-context-speed/sidecars/monitor/aggregate.mjs agy-context-speed/sidecars/monitor/aggregate.mjs
+--- agy-context-speed/sidecars/monitor/aggregate.mjs	2026-11-27 09:49:17
++++ agy-context-speed/sidecars/monitor/aggregate.mjs	2026-11-27 09:49:17
+@@ -7,7 +7,7 @@
+ import { join } from 'node:path';
+ import { readRecentCalls } from './calls.mjs';
+ import { discoverSessions, extractTurns, readJsonlTail } from './metrics.mjs';
+-import { QUOTA_POOLS, aggregatePriced, modelPool, priceTurns } from './pricing.mjs';
++import { QUOTA_POOLS, aggregatePriced, aggregateThirdParty, modelPool, priceTurns } from './pricing.mjs';
+ import { DEFAULT_WINDOWS, sanitizeWindows } from './settings.mjs';
+ 
+ const DAY_MS = 86_400_000;
+@@ -54,6 +54,15 @@
+   return { startMs: monthStart, endMs: nowMs, nextMs: monthNext };
+ }
+ 
++export function resolveCalendarWeekWindow(nowMs = Date.now()) {
++  const monday = new Date(nowMs);
++  monday.setHours(0, 0, 0, 0);
++  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
++  const startMs = monday.getTime();
++  monday.setDate(monday.getDate() + 7);
++  return { startMs, endMs: nowMs, nextMs: monday.getTime() };
++}
++
+ /**
+  * 计算单个额度池的活动窗口：
+  * - 周期到期或点击「重置」后，不会按固定钟表自动切入下一轮，而是等待该池首次实际调用才开始计时；
+@@ -140,12 +149,12 @@
+   return priced;
+ }
+ 
+-function summarizeTurns(turns, extra = {}) {
++function summarizeTurns(turns, extra = {}, aggregate = aggregatePriced) {
+   const sessions = new Set();
+   for (const t of turns) {
+     if (t.sessionId) sessions.add(t.sessionId);
+   }
+-  return { ...extra, sessionCount: sessions.size, ...aggregatePriced(turns) };
++  return { ...extra, sessionCount: sessions.size, ...aggregate(turns) };
+ }
+ 
+ function buildPoolWindow(poolConfigs, turnsByPool, timesByPool, defaultCycleHours, now) {
+@@ -190,12 +199,14 @@
+     }
+   }
+ 
++  const nativeTurns = allTurns.filter(t => !t.billing);
++  const thirdPartyTurns = allTurns.filter(t => t.billing);
+   const turnsByPool = new Map(QUOTA_POOLS.map(def => [def.id, []]));
+-  const unpooledTurns = [];
+-  for (const turn of allTurns) {
+-    const pid = modelPool(turn.modelId);
++  let unpooledCount = 0;
++  for (const turn of nativeTurns) {
++    const pid = modelPool(turn.modelId, turn.billing);
+     if (pid && turnsByPool.has(pid)) turnsByPool.get(pid).push(turn);
+-    else unpooledTurns.push(turn);
++    else unpooledCount++;
+   }
+   const timesByPool = new Map(QUOTA_POOLS.map(def => [
+     def.id,
+@@ -204,14 +215,19 @@
+ 
+   const fiveHour = buildPoolWindow(cfg.fiveHour, turnsByPool, timesByPool, 5, now);
+   const week = buildPoolWindow(cfg.week, turnsByPool, timesByPool, 168, now);
+-  const monthTurns = allTurns.filter(t => t.when >= monthBounds.startMs && t.when <= monthBounds.endMs);
++  const weekBounds = resolveCalendarWeekWindow(now);
++  const since = (turns, bounds) => turns.filter(t => t.when >= bounds.startMs);
+ 
+   return {
+     settings: cfg,
+     hasFiveHour: cfg.plan !== 'free',
+     fiveHour,
+     week,
+-    month: summarizeTurns(monthTurns, monthBounds),
+-    unpooledCount: unpooledTurns.length,
++    month: summarizeTurns(since(nativeTurns, monthBounds), monthBounds),
++    thirdParty: {
++      week: summarizeTurns(since(thirdPartyTurns, weekBounds), weekBounds, aggregateThirdParty),
++      month: summarizeTurns(since(thirdPartyTurns, monthBounds), monthBounds, aggregateThirdParty),
++    },
++    unpooledCount,
+   };
+ }
+diff -ruN agy-context-speed/sidecars/monitor/app.js agy-context-speed/sidecars/monitor/app.js
+--- agy-context-speed/sidecars/monitor/app.js	2026-11-27 09:49:17
++++ agy-context-speed/sidecars/monitor/app.js	2026-11-27 09:49:54
+@@ -1,9 +1,10 @@
+ (() => {
+ const $ = (id) => document.getElementById(id);
++const { createTooltip, createModelSwitcher, setTip, syncRows } = window.__agyPanelControls;
+ const RING_CIRC = 2 * Math.PI * 31; // 194.7787
+ 
+ let sessionId = '', loading = false, listSignature = '', breakdownSignature = '';
+-let selectedModelId = '', activeSessionId = '', lastSnapshot = null, modelBarSignature = '';
++let lastSnapshot = null, metricKey = '';
+ // 宿主通过 URL 把当前打开的会话 ID 交给 preload，自动模式据此跟随。
+ const conversationId = window.sidecar?.conversationId || '';
+ 
+@@ -60,21 +61,14 @@
+ const setHealth = (state, label) => {
+   const el = $('health');
+   el.className = `status ${state}`;
+-  el.title = label;
++  setTip(el, label);
+   el.setAttribute('aria-label', label);
+ };
+ 
+ const OTHER_SOURCES = { antigravity2: 'App 2', 'antigravity-ide': 'IDE', 'antigravity-cli': 'CLI' };
+ const AUTO_LABELS = { conversation: '当前会话（自动）', recent: '最近活动会话（自动）' };
+ const CEILING_TAGS = { configured: '预设', observed: '按用量升档' };
+-const ROLE_LABELS = { planner: '规划', executor: '执行' };
+ const NO_WORKSPACE = '未关联工作区';
+-const shortModelName = (name) => String(name || '')
+-  .replace(/^Gemini\s+4\s+(?=[A-Za-z])/i, '')
+-  .replace(/^Gemini\s+/i, '')
+-  .replace(/^Claude\s+/i, '')
+-  .replace(/^GPT-OSS\s+120B$/i, 'GPT-OSS')
+-  .trim() || String(name || '');
+ const sessionName = (s) => s.title || s.uuidShort;
+ const optionLabel = (s) => [sessionName(s), OTHER_SOURCES[s.source], shortWhen(s.modified)].filter(Boolean).join(' · ');
+ 
+@@ -103,7 +97,7 @@
+   if (!items.some(s => s.id === sessionId)) sessionId = '';
+   el.replaceChildren(new Option(autoLabel, ''), ...buildGroups(items));
+   el.value = sessionId;
+-  el.title = curTitle || autoLabel;
++  setTip(el, curTitle || autoLabel);
+ }
+ 
+ function filterPlotHistory(hist) {
+@@ -121,7 +115,7 @@
+ function renderSpeedGauge(p) {
+   const tps = p.tps;
+   set('tpsVal', tps == null ? '—' : (tps >= 100 ? String(Math.round(tps)) : tps.toFixed(1)));
+-  set('tpsUnit', p.mode === 'effective' ? '估算' : 't/s');
++  set('tpsUnit', p.mode === 'effective' && tps != null ? '估算' : 't/s');
+ 
+   const hist = filterPlotHistory(p.history || []);
+   const maxScale = Math.max(160, (tps || 0) * 1.15, ...hist.map(h => h.tps * 1.15));
+@@ -139,7 +133,7 @@
+   if (p.lastOutputTokens != null) {
+     tips.push(`本次输出：${fmt(p.lastOutputTokens)} tok${p.durationSeconds != null ? ` · ${secs(p.durationSeconds)}` : ''}`);
+   }
+-  $('speedGaugeWrap').title = tips.join('\n');
++  setTip($('speedGaugeWrap'), tips);
+ 
+   const note = p.mode === 'effective'
+     ? '未读到调用记录，按日志时间戳估算（含首字等待与思考，精度为秒）。'
+@@ -169,11 +163,13 @@
+   set('contextPct', ringPct(c.percent));
+   const avail = c.used == null ? null : Math.max(0, ceiling - c.used);
+   const lockCap = c.ceilingSource === 'session';
+-  $('ringBtn').disabled = lockCap;
+-  $('contextCap').disabled = lockCap;
++  $('ringBtn').setAttribute('aria-disabled', String(lockCap));
++  $('ringBtn').ariaLabel = lockCap ? '会话上下文使用率' : '切换预设上下文上限';
++  $('contextCap').setAttribute('aria-disabled', String(lockCap));
++  $('contextCap').ariaLabel = `上下文上限 ${fmt(ceiling)}`;
+   const capHint = lockCap ? '会话真实上限' : '点击切换预设上限（256k / 512k / 1M）';
+-  $('ringBtn').title = `上限：${fmt(ceiling)}\n可用：${fmt(avail)}\n${capHint}`;
+-  $('contextCap').title = capHint;
++  setTip($('ringBtn'), [`上限：${fmt(ceiling)}`, `可用：${fmt(avail)}`, capHint]);
++  setTip($('contextCap'), capHint);
+ 
+   set('contextUsed', fmt(c.used));
+   set('contextCap', fmt(ceiling));
+@@ -187,7 +183,7 @@
+   set('detailAvail', fmt(avail));
+ }
+ 
+-function renderOutput(p, t) {
++function renderOutput(p, t, scope) {
+   const el = $('detailOutput');
+   const totalOut = t.output || 0;
+   const lastOut = p.lastOutputTokens;
+@@ -211,8 +207,8 @@
+   if (totalOut > 0) {
+     const subOut = t.subagents?.output || 0;
+     tips.push(subOut > 0
+-      ? `整场输出：${fmt(totalOut)} tok（含子代理 ${fmt(subOut)}）`
+-      : `整场输出：${fmt(totalOut)} tok`);
++      ? `${scope}输出：${fmt(totalOut)} tok（含子代理 ${fmt(subOut)}）`
++      : `${scope}输出：${fmt(totalOut)} tok`);
+   }
+   if (lastOut != null) {
+     const extra = [];
+@@ -220,10 +216,10 @@
+     if (p.lastResponseTokens != null) extra.push(`正文 ${fmt(p.lastResponseTokens)}`);
+     tips.push(`最近一次：${fmt(lastOut)} tok${extra.length ? `（${extra.join(' · ')}）` : ''}`);
+   }
+-  $('rowOutput').title = tips.join('\n');
++  setTip($('rowOutput'), tips);
+ }
+ 
+-function renderCacheHit(c, t) {
++function renderCacheHit(c, t, scope) {
+   const el = $('detailCacheHit');
+   const sessionHit = t.cacheHitRate;
+   const lastHit = c.cacheHitRate;
+@@ -248,15 +244,22 @@
+ 
+   const totalIn = (t.input || 0) + (t.cached || 0);
+   const tips = [];
+-  if (sessionHit != null) tips.push(`整场会话：${pct(sessionHit)}（缓读 ${fmt(t.cached)} / 总输入 ${fmt(totalIn)}）`);
++  if (sessionHit != null) tips.push(`${scope}：${pct(sessionHit)}（缓读 ${fmt(t.cached)} / 总输入 ${fmt(totalIn)}）`);
+   if (lastHit != null) tips.push(`最近一次：${pct(lastHit)}（缓读 ${fmt(c.cache)} / 上下文 ${fmt(c.used)}）`);
+-  $('rowCacheHit').title = tips.join('\n');
++  setTip($('rowCacheHit'), tips);
+ }
+ 
++function clearChartHover() {
++  $('chartCrosshair').setAttribute('visibility', 'hidden');
++  $('chartDot').setAttribute('visibility', 'hidden');
++  set('chartHover', '');
++}
++
+ function renderSpeedChart(p) {
+   const hist = filterPlotHistory(p.history || []);
+   const avgLine = $('chartAvgLine');
+   if (!hist.length) {
++    clearChartHover();
+     $('chartArea').setAttribute('d', '');
+     $('chartLine').setAttribute('d', '');
+     avgLine.setAttribute('visibility', 'hidden');
+@@ -323,276 +326,125 @@
+     const p = nearest.pt;
+     const parts = [`${p.tps.toFixed(1)} t/s`, `${fmt(p.outputTokens)} tok`];
+     if (p.ttftSeconds != null) parts.push(`首字 ${p.ttftSeconds.toFixed(1)}s`);
+-    if (!selectedModelId && p.modelName && (lastSnapshot?.models?.length || 0) > 1) {
+-      parts.push(shortModelName(p.modelName));
+-    }
+     set('chartHover', parts.join(' · '));
+   });
+ 
+-  box.addEventListener('mouseleave', () => {
+-    crosshair.setAttribute('visibility', 'hidden');
+-    dot.setAttribute('visibility', 'hidden');
+-    set('chartHover', '');
+-  });
++  box.addEventListener('mouseleave', clearChartHover);
+ }
+ 
+-function makeKvRow(labelNode, valNodes, { sub = false, title = '', className = '' } = {}) {
++function updateBreakdownRow(row, { name, total, calls, sub, tip }) {
++  const [label, value] = row.children;
++  const [cost, count] = value.children;
++  row.className = sub ? 'kv kv-sub' : 'kv';
++  label.textContent = name;
++  cost.className = total == null ? 'kv-muted' : '';
++  cost.textContent = usd(total);
++  count.textContent = ` · ${calls} 次`;
++  row.tabIndex = tip ? 0 : -1;
++  setTip(row, tip);
++}
++
++function createBreakdownRow() {
+   const row = document.createElement('div');
+-  row.className = [sub ? 'kv kv-sub' : 'kv', className].filter(Boolean).join(' ');
+-  if (title) row.title = title;
+-  const lbl = document.createElement('span');
+-  lbl.className = 'kv-label';
+-  if (typeof labelNode === 'string') lbl.textContent = labelNode;
+-  else for (const n of [].concat(labelNode)) lbl.append(n);
+-  const val = document.createElement('span');
+-  val.className = 'kv-val';
+-  for (const node of valNodes) val.append(node);
+-  row.append(lbl, val);
++  const label = document.createElement('span');
++  label.className = 'kv-label';
++  const value = document.createElement('span');
++  value.className = 'kv-val';
++  const cost = document.createElement('span');
++  const count = document.createElement('span');
++  count.className = 'kv-muted';
++  value.append(cost, count);
++  row.append(label, value);
+   return row;
+ }
+ 
+-function formatCostAndCalls(costText, calls, mutedCost = false, tps = null) {
+-  const nodes = [];
+-  if (tps != null) {
+-    const tpsSpan = document.createElement('span');
+-    tpsSpan.className = 'kv-muted';
+-    tpsSpan.textContent = `${tps >= 100 ? Math.round(tps) : tps.toFixed(1)} t/s · `;
+-    nodes.push(tpsSpan);
+-  }
+-  const costSpan = document.createElement('span');
+-  if (mutedCost) costSpan.className = 'kv-muted';
+-  costSpan.textContent = costText;
+-  const tail = document.createElement('span');
+-  tail.className = 'kv-muted';
+-  tail.textContent = ` · ${calls} 次`;
+-  nodes.push(costSpan, tail);
+-  return nodes;
++function modelBreakdown(m, group) {
++  return { key: `${group}:${m.id}`, name: m.name, total: m.total, calls: m.calls, sub: true, tip: [
++    `${m.name} · ${m.calls} 次调用`,
++    `入 ${fmt(m.inputTokens)} · 缓 ${fmt(m.cachedTokens)} · 出 ${fmt(m.outputTokens)}`,
++    m.rates && `最近费率：入 $${m.rates.input} / 缓 $${m.rates.cached} / 出 $${m.rates.output}（每 1M）`,
++  ] };
+ }
+ 
+-function makeModelBreakdownRow(m, sub = true, modelView = null, clickable = false, selected = false) {
+-  const perf = modelView?.performance;
+-  const ctx = modelView?.context;
+-  const hit = modelView?.totals?.cacheHitRate;
+-  const roleLabel = modelView?.role ? ROLE_LABELS[modelView.role] : '';
+-  const speedParts = [];
+-  if (perf?.tps != null) speedParts.push(`速度 ${perf.tps.toFixed(1)} t/s`);
+-  if (perf?.ttftMedianSeconds != null) speedParts.push(`首字中位 ${secs(perf.ttftMedianSeconds)}`);
+-  if (hit != null) speedParts.push(`缓存命中 ${pct(hit)}`);
+-  const rateLine = m.rates
+-    ? `\n费率：入 $${m.rates.input} / 缓 $${m.rates.cached} / 出 $${m.rates.output}（每 1M）`
+-    : '';
+-  const title = [
+-    `${m.name}${roleLabel ? `（${roleLabel}）` : ''} · ${m.calls} 次调用`,
+-    speedParts.join(' · '),
+-    ctx?.used != null ? `上下文 ${fmt(ctx.used)} / ${fmt(ctx.ceiling)}` : '',
+-    `入 ${fmt(m.inputTokens)} · 缓 ${fmt(m.cachedTokens)} · 出 ${fmt(m.outputTokens)}${rateLine}`,
+-  ].filter(Boolean).join('\n');
+-
+-  const lblNodes = [document.createTextNode(m.name)];
+-  if (roleLabel) {
+-    const tag = document.createElement('span');
+-    tag.className = 'role-tag';
+-    tag.textContent = roleLabel;
+-    lblNodes.push(tag);
+-  }
+-  const row = makeKvRow(
+-    lblNodes,
+-    formatCostAndCalls(usd(m.total), m.calls, false, clickable ? perf?.tps : null),
+-    {
+-      sub,
+-      title,
+-      className: clickable ? (selected ? 'kv-click kv-selected' : 'kv-click') : '',
+-    }
+-  );
+-  if (clickable) {
+-    row.addEventListener('click', () => {
+-      selectedModelId = selectedModelId === m.id ? '' : m.id;
+-      syncModelTabSelection();
+-      if (lastSnapshot) renderActiveView(lastSnapshot);
+-    });
+-  }
+-  return row;
++function breakdownRows(k, sub) {
++  if (!k?.totalCalls) return [];
++  const totals = k.tokens;
++  const totalTip = [
++    `输入 ${fmt(totals.input)} (${usd(k.input)})`,
++    `缓存 ${fmt(totals.cached)} (${usd(k.cached)})`,
++    `输出 ${fmt(totals.output)} (${usd(k.output)})`,
++    k.last != null && `本次原生调用：${usd(k.last)}`,
++    k.cacheSaved > 0 && `缓存节省：${usd(k.cacheSaved)}`,
++  ];
++  const primary = k.primaryModels || k.models;
++  const unpriced = Math.max(0, k.primaryCalls - primary.reduce((sum, m) => sum + m.calls, 0));
++  const hasSub = sub.count > 0 || sub.modelCalls > 0;
++  const short = !hasSub && primary.length <= 1 && unpriced === 0;
++  const rows = [{ key: 'total', name: short ? primary[0]?.name || '原生会话' : '原生会话', total: k.total, calls: k.totalCalls, tip: totalTip }];
++  if (short) return rows;
++  rows.push(...primary.map(m => modelBreakdown(m, 'primary')));
++  if (unpriced > 0) rows.push({ key: 'primary-unpriced', name: '未计价调用', calls: unpriced, sub: true });
++  if (!hasSub) return rows;
++  rows.push({ key: 'subagents', name: `子代理 (${sub.count} 个)`, total: sub.cost, calls: sub.modelCalls, tip: [
++    `子代理 ${sub.count} 个 · 共 ${sub.modelCalls} 次调用`,
++    `入 ${fmt(sub.input)} · 缓 ${fmt(sub.cached)} · 出 ${fmt(sub.output)}`,
++  ] });
++  rows.push(...sub.models.map(m => modelBreakdown(m, 'subagent')));
++  if (sub.unpricedCalls > 0) rows.push({ key: 'subagent-unpriced', name: '未计价调用', calls: sub.unpricedCalls, sub: true });
++  return rows;
+ }
+ 
+-function renderDetailsTail(p, t, k, modelViews = []) {
+-  set('detailTtft', p.ttftSeconds != null ? secs(p.ttftSeconds) : (p.ttftMedianSeconds != null ? `中位 ${secs(p.ttftMedianSeconds)}` : '—'));
+-  $('rowTtft').title = p.ttftMedianSeconds != null ? `近 20 次首字中位：${secs(p.ttftMedianSeconds)}` : '';
+-
+-  const primaryModels = k.primaryModels || k.models || [];
+-  const sub = t.subagents || { count: 0, modelCalls: 0, models: [] };
+-  const subModels = sub.models || [];
+-  const hasSub = sub.count > 0 || sub.modelCalls > 0;
+-  const primaryCalls = k.primaryCalls ?? (t.modelCalls - (sub.modelCalls || 0));
+-  const primaryUnpriced = Math.max(0, primaryCalls - primaryModels.reduce((s, m) => s + m.calls, 0));
+-  const multiPrimary = modelViews.length > 1;
+-  const modelMap = new Map(modelViews.map(v => [v.id, v]));
+-
+-  const sig = JSON.stringify([
+-    k.mode, k.total, k.last, t.modelCalls, primaryCalls, primaryUnpriced,
+-    multiPrimary ? selectedModelId : '',
+-    primaryModels.map(m => {
+-      const mv = modelMap.get(m.id);
+-      return [m.id, m.calls, m.total, mv?.role || '', mv?.performance?.tps ?? null];
+-    }),
+-    sub.count, sub.modelCalls, sub.cost, sub.unpricedCalls,
+-    subModels.map(m => [m.id, m.calls, m.total]),
+-    k.unrecognizedModels,
+-  ]);
++function renderNativeCost(k, sub) {
++  const rows = breakdownRows(k, sub);
++  const sig = JSON.stringify(rows);
+   if (sig !== breakdownSignature) {
+     breakdownSignature = sig;
+-    const totalTip = [
+-      `输入 ${fmt(t.input)} (${usd(k.input)})`,
+-      `缓存 ${fmt(t.cached)} (${usd(k.cached)})`,
+-      `输出 ${fmt(t.output)} (${usd(k.output)})`,
+-      k.last != null ? `本次调用：${usd(k.last)}` : '',
+-      k.cacheSaved > 0 ? `缓存节省：${usd(k.cacheSaved)}` : '',
+-    ].filter(Boolean).join('\n');
+-
+-    const rows = [];
+-    if (!hasSub && primaryModels.length <= 1 && primaryUnpriced === 0) {
+-      const m = primaryModels[0];
+-      const name = m?.name || (t.modelCalls ? '未识别模型' : '本会话');
+-      const costStr = m ? usd(m.total) : usd(k.total);
+-      rows.push(makeKvRow(name, formatCostAndCalls(costStr, t.modelCalls, !m && k.total == null), { title: totalTip }));
+-    } else {
+-      rows.push(makeKvRow('本会话', formatCostAndCalls(usd(k.total), t.modelCalls, k.total == null), { title: totalTip }));
+-      for (const m of primaryModels) {
+-        rows.push(makeModelBreakdownRow(m, true, modelMap.get(m.id), multiPrimary, selectedModelId === m.id));
+-      }
+-      if (primaryUnpriced > 0) {
+-        rows.push(makeKvRow('未计价调用', formatCostAndCalls('—', primaryUnpriced, true), { sub: true }));
+-      }
+-      if (hasSub) {
+-        const subTip = [
+-          `子代理 ${sub.count} 个 · 共 ${sub.modelCalls} 次调用`,
+-          `入 ${fmt(sub.input)} · 缓 ${fmt(sub.cached)} · 出 ${fmt(sub.output)}`,
+-        ].join('\n');
+-        rows.push(makeKvRow(
+-          `子代理 (${sub.count} 个)`,
+-          formatCostAndCalls(usd(sub.cost ?? k.subagentTotal), sub.modelCalls, sub.cost == null && !k.subagentTotal),
+-          { title: subTip }
+-        ));
+-        for (const m of subModels) rows.push(makeModelBreakdownRow(m, true));
+-        if ((sub.unpricedCalls || 0) > 0) {
+-          rows.push(makeKvRow('未计价调用', formatCostAndCalls('—', sub.unpricedCalls, true), { sub: true }));
+-        }
+-      }
+-    }
+-    $('sessionBreakdown').replaceChildren(...rows);
++    syncRows($('sessionBreakdown'), rows, row => row.key, createBreakdownRow, updateBreakdownRow);
+   }
+-
+-  let costNote = '';
+-  if (k.mode === 'unavailable' && t.modelCalls > 0) {
+-    costNote = k.unrecognizedModels?.length
++  let note = '';
++  if (k?.totalCalls && k?.mode === 'unavailable') {
++    note = k.unrecognizedModels?.length
+       ? `未收录模型费率：${k.unrecognizedModels.join('、')}`
+       : '未读到调用记录里的模型信息，无法计算价格。';
+-  } else if (k.mode === 'partial') {
+-    costNote = k.unrecognizedModels?.length
++  } else if (k?.mode === 'partial') {
++    note = k.unrecognizedModels?.length
+       ? `未收录部分模型费率（${k.unrecognizedModels.join('、')}），金额仅计入已识别的 ${k.pricedCalls}/${k.totalCalls} 次。`
+       : `部分调用未能匹配模型记录，金额仅计入已识别的 ${k.pricedCalls}/${k.totalCalls} 次。`;
+   }
+-  set('costNote', costNote);
+-  $('costNote').hidden = !costNote;
++  $('nativeCostSection').hidden = !rows.length;
++  set('costNote', note);
++  $('costNote').hidden = !note;
+ }
+ 
+-function syncModelTabSelection() {
+-  for (const btn of $('modelTabs').children) {
+-    const active = btn.dataset.model === selectedModelId;
+-    btn.classList.toggle('active', active);
+-    btn.setAttribute('aria-selected', String(active));
+-  }
++function renderModelMetrics() {
++  const view = modelSwitcher.render(lastSnapshot);
++  $('modelMetrics').hidden = !view;
++  if (!view) return;
++  const { context: c, performance: p, totals: t } = view;
++  const nextKey = JSON.stringify([lastSnapshot.session.id, view.key]);
++  if (metricKey !== nextKey) { clearChartHover(); metricKey = nextKey; }
++  const scope = view.key ? '本模型' : '整场会话';
++  renderSpeedGauge(p);
++  renderContextRingAndDetails(c);
++  renderOutput(p, t, scope);
++  renderCacheHit(c, t, scope);
++  renderSpeedChart(p);
++  set('detailTtft', p.ttftSeconds != null ? secs(p.ttftSeconds) : (p.ttftMedianSeconds != null ? `中位 ${secs(p.ttftMedianSeconds)}` : '—'));
++  setTip($('rowTtft'), p.ttftMedianSeconds != null ? `近 20 次首字中位：${secs(p.ttftMedianSeconds)}` : '');
+ }
+ 
+-function makeModelTab(id, label, tip, isActiveModel = false) {
+-  const btn = document.createElement('button');
+-  btn.type = 'button';
+-  btn.className = 'seg-tab';
+-  btn.role = 'tab';
+-  btn.dataset.model = id;
+-  btn.title = tip;
+-  if (isActiveModel) {
+-    const dot = document.createElement('i');
+-    dot.className = 'live-dot';
+-    btn.append(dot);
+-  }
+-  btn.append(document.createTextNode(label));
+-  btn.addEventListener('click', () => {
+-    if (selectedModelId === id) return;
+-    selectedModelId = id;
+-    syncModelTabSelection();
+-    if (lastSnapshot) renderActiveView(lastSnapshot);
+-  });
+-  return btn;
+-}
+-
+-function renderModelBar(models) {
+-  const bar = $('modelBar');
+-  if (!models || models.length <= 1) {
+-    bar.hidden = true;
+-    modelBarSignature = '';
+-    return;
+-  }
+-  bar.hidden = false;
+-  const sig = JSON.stringify(models.map(m => [
+-    m.id, m.role, m.isActive, m.calls, m.performance?.tps, m.context?.used, m.cost?.total,
+-  ]));
+-  if (sig !== modelBarSignature) {
+-    modelBarSignature = sig;
+-    const tabs = [makeModelTab('', '全部', '查看全会话合并指标')];
+-    for (const m of models) {
+-      const roleLabel = m.role ? ROLE_LABELS[m.role] : '';
+-      const label = roleLabel ? `${roleLabel} ${shortModelName(m.name)}` : shortModelName(m.name);
+-      const tip = [
+-        roleLabel ? `${m.name}（${roleLabel}）` : m.name,
+-        m.performance?.tps != null ? `速度：${m.performance.tps.toFixed(1)} tok/s` : '',
+-        m.performance?.ttftMedianSeconds != null ? `首字中位：${secs(m.performance.ttftMedianSeconds)}` : '',
+-        m.totals?.cacheHitRate != null ? `缓存命中：${pct(m.totals.cacheHitRate)}` : '',
+-        m.context?.used != null ? `上下文：${fmt(m.context.used)} / ${fmt(m.context.ceiling)}` : '',
+-        `${m.calls} 次调用 · ${usd(m.cost?.total)}`,
+-      ].filter(Boolean).join('\n');
+-      tabs.push(makeModelTab(m.id, label, tip, m.isActive));
+-    }
+-    $('modelTabs').replaceChildren(...tabs);
+-  }
+-  syncModelTabSelection();
+-}
+-
+-function renderActiveView(s) {
+-  const view = selectedModelId ? s.models?.find(m => m.id === selectedModelId) : null;
+-  const target = view || s;
+-  set('freshness', `更新 ${when(target.context.updatedAt || s.context.updatedAt)}`);
+-  renderSpeedGauge(target.performance);
+-  renderContextRingAndDetails(target.context);
+-  renderOutput(target.performance, target.totals);
+-  renderCacheHit(target.context, target.totals);
+-  renderSpeedChart(target.performance);
+-  renderDetailsTail(target.performance, s.totals, s.cost || {}, s.models || []);
+-}
+-
+ function render(json) {
+-  if (json.status !== 'ok' || !json.snapshot) {
++  lastSnapshot = json.status === 'ok' ? json.snapshot : null;
++  $('emptyBanner').hidden = Boolean(lastSnapshot);
++  if (lastSnapshot) {
++    setHealth('ready', '本地连接');
++  } else {
+     setHealth('', '暂无数据');
+-    $('emptyBanner').hidden = false;
+     set('emptyBanner', json.message || '请先在 Antigravity 中运行一次会话');
+-    $('modelBar').hidden = true;
+-    lastSnapshot = null;
+-    return;
+   }
+-  $('emptyBanner').hidden = true;
+-  setHealth('ready', '本地连接');
+-  const s = json.snapshot;
+-  const sid = s.session?.id || '';
+-  if (sid !== activeSessionId) {
+-    activeSessionId = sid;
+-    selectedModelId = '';
+-  }
+-  const models = s.models || [];
+-  if (models.length <= 1 || (selectedModelId && !models.some(m => m.id === selectedModelId))) {
+-    selectedModelId = '';
+-  }
+-  lastSnapshot = s;
+-  renderModelBar(models);
+-  renderActiveView(s);
++  set('freshness', lastSnapshot ? `更新 ${when(lastSnapshot.context.updatedAt)}` : '');
++  renderModelMetrics();
++  renderNativeCost(lastSnapshot?.cost, lastSnapshot?.totals.subagents);
+ }
+ 
+ async function saveWindows(patch) {
+@@ -606,6 +458,8 @@
+   } catch (e) { set('error', `保存时间设置失败：${String(e?.message || e).slice(0, 80)}`); }
+ }
+ 
++const tooltip = createTooltip();
++const modelSwitcher = createModelSwitcher({ fmt, pct, secs, onChange: () => { renderModelMetrics(); tooltip.render(); } });
+ const windowsPanel = window.__agyWindowsUI({
+   $, set, fmt, usd, shortStart, fullWhen, toDatetimeInput, fmtSpan, saveWindows,
+ });
+@@ -622,17 +476,20 @@
+     const result = await r.json();
+     updateSessions(result.sessions || [], result.auto, result.snapshot?.session);
+     render(result);
+-    windowsPanel.render(result.windows);
++    windowsPanel.render(result.windows, lastSnapshot?.thirdParty);
++    tooltip.render();
+     set('error', '');
+   } catch (e) {
+     setHealth('error', '连接失败');
++    tooltip.render();
+     set('error', String(e?.message || e).slice(0, 90));
+   } finally {
+     loading = false;
+   }
+ }
+ 
+-const cycleLimit = async () => {
++const cycleLimit = async (e) => {
++  if (e.currentTarget.getAttribute('aria-disabled') === 'true') return;
+   try {
+     const r = await fetch('/api/context-limit/next', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+     if (!r.ok) throw new Error(`HTTP ${r.status}`);
+diff -ruN agy-context-speed/sidecars/monitor/index.html agy-context-speed/sidecars/monitor/index.html
+--- agy-context-speed/sidecars/monitor/index.html	2026-11-27 09:49:17
++++ agy-context-speed/sidecars/monitor/index.html	2026-11-27 09:50:44
+@@ -7,13 +7,14 @@
+   <title>Context & Speed</title>
+   <link rel="stylesheet" href="/styles.css">
+   <script src="/preload.js"></script>
++  <script src="/panel-controls.js" defer></script>
+   <script src="/windows-ui.js" defer></script>
+   <script src="/app.js" defer></script>
+ </head>
+ <body>
+ <main>
+   <header class="topbar">
+-    <span id="health" class="status" role="img" aria-label="连接中" title="连接中"></span>
++    <span id="health" class="status" role="img" aria-label="连接中" data-tip="连接中"></span>
+     <select id="sessions" aria-label="选择会话"><option value="">最近活动会话</option></select>
+     <button id="refresh" class="top-btn" data-tip="立即刷新" aria-label="立即刷新" type="button">
+       <svg class="ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+@@ -25,91 +26,96 @@
+ 
+   <div id="emptyBanner" class="empty-banner" hidden>正在读取本地会话…</div>
+ 
+-  <div id="modelBar" class="model-bar" hidden>
+-    <div id="modelTabs" class="segmented seg-models" role="tablist" aria-label="模型视角"></div>
++  <div id="modelSwitcher" class="model-switcher" role="tablist" aria-label="会话模型" hidden>
++    <button id="followActiveModel" class="seg-tab model-tab active" role="tab" aria-controls="modelMetrics" aria-selected="true" type="button">自动</button>
++    <div id="modelTabs" class="model-tabs" role="presentation"></div>
+   </div>
+ 
+-  <section class="gauges" aria-label="核心仪表">
+-    <div class="gauge-item" id="speedGaugeWrap" title="">
+-      <svg class="speed-svg" viewBox="0 0 86 54" aria-hidden="true">
+-        <circle cx="7" cy="46" r="3.5" fill="var(--cs-amber)"/>
+-        <path d="M 7 46 A 36 36 0 0 1 25 14.82" fill="none" stroke="var(--cs-amber)" stroke-width="7"/>
+-        <path d="M 25 14.82 A 36 36 0 0 1 61 14.82" fill="none" stroke="var(--cs-green)" stroke-width="7"/>
+-        <path d="M 61 14.82 A 36 36 0 0 1 79 46" fill="none" stroke="var(--cs-blue)" stroke-width="7"/>
+-        <circle cx="79" cy="46" r="3.5" fill="var(--cs-blue)"/>
+-        <g id="speedNeedle" transform="rotate(-90 43 46)">
+-          <line x1="43" y1="46" x2="43" y2="15" stroke="var(--cs-needle)" stroke-width="2.6" stroke-linecap="round"/>
+-          <circle cx="43" cy="46" r="3.6" fill="var(--cs-needle)"/>
+-        </g>
++  <div id="modelMetrics" role="tabpanel" aria-labelledby="followActiveModel" hidden>
++    <section class="gauges" aria-label="核心仪表">
++      <div class="gauge-item" id="speedGaugeWrap" tabindex="0">
++        <svg class="speed-svg" viewBox="0 0 86 54" aria-hidden="true">
++          <circle cx="7" cy="46" r="3.5" fill="var(--cs-amber)"/>
++          <path d="M 7 46 A 36 36 0 0 1 25 14.82" fill="none" stroke="var(--cs-amber)" stroke-width="7"/>
++          <path d="M 25 14.82 A 36 36 0 0 1 61 14.82" fill="none" stroke="var(--cs-green)" stroke-width="7"/>
++          <path d="M 61 14.82 A 36 36 0 0 1 79 46" fill="none" stroke="var(--cs-blue)" stroke-width="7"/>
++          <circle cx="79" cy="46" r="3.5" fill="var(--cs-blue)"/>
++          <g id="speedNeedle" transform="rotate(-90 43 46)">
++            <line x1="43" y1="46" x2="43" y2="15" stroke="var(--cs-needle)" stroke-width="2.6" stroke-linecap="round"/>
++            <circle cx="43" cy="46" r="3.6" fill="var(--cs-needle)"/>
++          </g>
++        </svg>
++        <div class="gauge-readout"><strong id="tpsVal">—</strong><span id="tpsUnit">t/s</span></div>
++      </div>
++
++      <button class="gauge-item gauge-btn" id="ringBtn" type="button" aria-disabled="true">
++        <svg class="ring-svg" viewBox="0 0 76 76" aria-hidden="true">
++          <circle cx="38" cy="38" r="31" fill="none" stroke="var(--cs-track)" stroke-width="7"/>
++          <circle id="ringCache" cx="38" cy="38" r="31" fill="none" stroke="var(--cs-blue)" stroke-width="7"
++            stroke-dasharray="0 194.78" transform="rotate(-90 38 38)"/>
++          <circle id="ringInput" cx="38" cy="38" r="31" fill="none" stroke="var(--cs-orange)" stroke-width="7"
++            stroke-dasharray="0 194.78" transform="rotate(-90 38 38)"/>
++        </svg>
++        <span class="ring-center" id="contextPct">—</span>
++      </button>
++    </section>
++
++    <div class="divider"><span>速度历史</span></div>
++    <div class="chart-box" id="chartBox">
++      <div class="chart-meta"><span id="chartCaption">—</span><span id="chartHover"></span></div>
++      <svg id="speedChart" class="chart-svg" viewBox="0 0 264 56" preserveAspectRatio="none" aria-label="生成速度历史">
++        <defs>
++          <linearGradient id="speedFillGrad" x1="0" y1="0" x2="0" y2="1">
++            <stop offset="0%" stop-color="#0a84ff" stop-opacity="0.58"/>
++            <stop offset="100%" stop-color="#0a84ff" stop-opacity="0.06"/>
++          </linearGradient>
++        </defs>
++        <path id="chartArea" fill="url(#speedFillGrad)" d=""/>
++        <line id="chartAvgLine" x1="0" y1="0" x2="264" y2="0" stroke="var(--cs-muted)" stroke-width="0.8" stroke-dasharray="3 3" opacity="0.55" visibility="hidden"/>
++        <path id="chartLine" fill="none" stroke="#0a84ff" stroke-width="1.6" stroke-linejoin="round" d=""/>
++        <line id="chartCrosshair" x1="0" y1="0" x2="0" y2="56" stroke="var(--cs-muted)" stroke-width="0.8" stroke-dasharray="2 2" visibility="hidden"/>
++        <circle id="chartDot" cx="0" cy="0" r="3" fill="#0a84ff" stroke="var(--cs-bg)" stroke-width="1.5" visibility="hidden"/>
+       </svg>
+-      <div class="gauge-readout"><strong id="tpsVal">—</strong><span id="tpsUnit">t/s</span></div>
+     </div>
++    <div class="note" id="speedNote" hidden></div>
+ 
+-    <button class="gauge-item gauge-btn" id="ringBtn" type="button" title="切换预设上限" disabled>
+-      <svg class="ring-svg" viewBox="0 0 76 76" aria-hidden="true">
+-        <circle cx="38" cy="38" r="31" fill="none" stroke="var(--cs-track)" stroke-width="7"/>
+-        <circle id="ringCache" cx="38" cy="38" r="31" fill="none" stroke="var(--cs-blue)" stroke-width="7"
+-          stroke-dasharray="0 194.78" transform="rotate(-90 38 38)"/>
+-        <circle id="ringInput" cx="38" cy="38" r="31" fill="none" stroke="var(--cs-orange)" stroke-width="7"
+-          stroke-dasharray="0 194.78" transform="rotate(-90 38 38)"/>
+-      </svg>
+-      <span class="ring-center" id="contextPct">—</span>
+-    </button>
+-  </section>
+-
+-  <div class="divider"><span>速度历史</span></div>
+-  <div class="chart-box" id="chartBox">
+-    <div class="chart-meta"><span id="chartCaption">—</span><span id="chartHover"></span></div>
+-    <svg id="speedChart" class="chart-svg" viewBox="0 0 264 56" preserveAspectRatio="none" aria-label="生成速度历史">
+-      <defs>
+-        <linearGradient id="speedFillGrad" x1="0" y1="0" x2="0" y2="1">
+-          <stop offset="0%" stop-color="#0a84ff" stop-opacity="0.58"/>
+-          <stop offset="100%" stop-color="#0a84ff" stop-opacity="0.06"/>
+-        </linearGradient>
+-      </defs>
+-      <path id="chartArea" fill="url(#speedFillGrad)" d=""/>
+-      <line id="chartAvgLine" x1="0" y1="0" x2="264" y2="0" stroke="var(--cs-muted)" stroke-width="0.8" stroke-dasharray="3 3" opacity="0.55" visibility="hidden"/>
+-      <path id="chartLine" fill="none" stroke="#0a84ff" stroke-width="1.6" stroke-linejoin="round" d=""/>
+-      <line id="chartCrosshair" x1="0" y1="0" x2="0" y2="56" stroke="var(--cs-muted)" stroke-width="0.8" stroke-dasharray="2 2" visibility="hidden"/>
+-      <circle id="chartDot" cx="0" cy="0" r="3" fill="#0a84ff" stroke="var(--cs-bg)" stroke-width="1.5" visibility="hidden"/>
+-    </svg>
++    <div class="divider"><span>详细信息</span></div>
++    <section class="details">
++      <div class="kv kv-head">
++        <span class="kv-label">已用</span>
++        <span class="kv-val"><b id="contextUsed">—</b><span class="sep">/</span><button id="contextCap" class="cap" type="button" aria-disabled="true">—</button><span id="contextSource" class="tag"></span></span>
++      </div>
++      <div class="segbar" id="segbar">
++        <div id="barCache" class="seg-cache"></div>
++        <div id="barInput" class="seg-input"></div>
++      </div>
++      <div class="kv" id="rowCache">
++        <span class="kv-label"><i class="dot dot-blue"></i>缓存读</span>
++        <span class="kv-val" id="detailCache">—</span>
++      </div>
++      <div class="kv" id="rowInput">
++        <span class="kv-label"><i class="dot dot-orange"></i>新输入</span>
++        <span class="kv-val" id="detailInput">—</span>
++      </div>
++      <div class="kv">
++        <span class="kv-label"><i class="dot dot-gray"></i>可用</span>
++        <span class="kv-val" id="detailAvail">—</span>
++      </div>
++      <div class="kv" id="rowOutput" tabindex="0">
++        <span class="kv-label">输出</span>
++        <span class="kv-val" id="detailOutput">—</span>
++      </div>
++      <div class="kv" id="rowCacheHit" tabindex="0">
++        <span class="kv-label">缓存命中</span>
++        <span class="kv-val" id="detailCacheHit">—</span>
++      </div>
++      <div class="kv" id="rowTtft" tabindex="0">
++        <span class="kv-label">首字延迟</span>
++        <span class="kv-val" id="detailTtft">—</span>
++      </div>
++    </section>
+   </div>
+-  <div class="note" id="speedNote" hidden></div>
+-
+-  <div class="divider"><span>详细信息</span></div>
+-  <section class="details">
+-    <div class="kv kv-head">
+-      <span class="kv-label">已用</span>
+-      <span class="kv-val"><b id="contextUsed">—</b><span class="sep">/</span><button id="contextCap" class="cap" type="button" title="切换预设上限" disabled>—</button><span id="contextSource" class="tag"></span></span>
+-    </div>
+-    <div class="segbar" id="segbar">
+-      <div id="barCache" class="seg-cache"></div>
+-      <div id="barInput" class="seg-input"></div>
+-    </div>
+-    <div class="kv" id="rowCache">
+-      <span class="kv-label"><i class="dot dot-blue"></i>缓存读</span>
+-      <span class="kv-val" id="detailCache">—</span>
+-    </div>
+-    <div class="kv" id="rowInput">
+-      <span class="kv-label"><i class="dot dot-orange"></i>新输入</span>
+-      <span class="kv-val" id="detailInput">—</span>
+-    </div>
+-    <div class="kv">
+-      <span class="kv-label"><i class="dot dot-gray"></i>可用</span>
+-      <span class="kv-val" id="detailAvail">—</span>
+-    </div>
+-    <div class="kv" id="rowOutput">
+-      <span class="kv-label">输出</span>
+-      <span class="kv-val" id="detailOutput">—</span>
+-    </div>
+-    <div class="kv" id="rowCacheHit">
+-      <span class="kv-label">缓存命中</span>
+-      <span class="kv-val" id="detailCacheHit">—</span>
+-    </div>
+-    <div class="kv" id="rowTtft">
+-      <span class="kv-label">首字延迟</span>
+-      <span class="kv-val" id="detailTtft">—</span>
+-    </div>
++  <section class="details native-cost" id="nativeCostSection" aria-label="原生会话费用" hidden>
+     <div id="sessionBreakdown" class="breakdown"></div>
+     <div class="note" id="costNote" hidden></div>
+   </section>
+@@ -124,7 +130,7 @@
+       </div>
+       <div class="sum-right">
+         <span id="winMeta" class="sum-meta"></span>
+-        <b id="winTotalCost" class="sum-cost">—</b>
++        <b tabindex="0" id="winTotalCost" class="sum-cost">—</b>
+         <button id="toggleWinSettings" class="settings-btn" type="button" data-tip="订阅与周期校准" aria-label="订阅与周期校准" aria-expanded="false">
+           <svg class="ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+             <circle cx="8" cy="8" r="2.2"/>
+@@ -162,7 +168,24 @@
+     <div class="note" id="winNote" hidden></div>
+   </section>
+ 
++  <div class="divider"><span id="thirdPartyHeading">第三方模型</span></div>
++  <section class="summary" aria-labelledby="thirdPartyHeading">
++    <div class="sum-bar">
++      <div id="thirdPartyTabs" class="segmented" role="tablist" aria-label="第三方模型统计周期">
++        <button id="thirdPartySessionTab" class="seg-tab active" data-third="session" type="button" role="tab" aria-controls="thirdPartyPanel" aria-selected="true">本会话</button>
++        <button id="thirdPartyWeekTab" class="seg-tab" data-third="week" type="button" role="tab" aria-controls="thirdPartyPanel" aria-selected="false" tabindex="-1">本周</button>
++        <button id="thirdPartyMonthTab" class="seg-tab" data-third="month" type="button" role="tab" aria-controls="thirdPartyPanel" aria-selected="false" tabindex="-1">本月</button>
++      </div>
++      <b tabindex="0" id="thirdPartyCost" class="sum-cost">—</b>
++    </div>
++    <div id="thirdPartyPanel" role="tabpanel" aria-labelledby="thirdPartySessionTab">
++      <div id="thirdPartyModels" class="rank-list"></div>
++      <div id="thirdPartyNote" class="note" hidden></div>
++    </div>
++  </section>
++
+   <footer><span id="freshness"></span><span id="error"></span></footer>
+ </main>
++<div id="csTooltip" role="tooltip" hidden></div>
+ </body>
+ </html>
+diff -ruN agy-context-speed/sidecars/monitor/main.mjs agy-context-speed/sidecars/monitor/main.mjs
+--- agy-context-speed/sidecars/monitor/main.mjs	2026-11-27 09:49:17
++++ agy-context-speed/sidecars/monitor/main.mjs	2026-11-27 09:49:17
+@@ -7,11 +7,13 @@
+ const app = new SidecarApp();
+ const html = () => readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+ const js = () => readFileSync(new URL('./app.js', import.meta.url), 'utf8');
++const controlsJs = () => readFileSync(new URL('./panel-controls.js', import.meta.url), 'utf8');
+ const winJs = () => readFileSync(new URL('./windows-ui.js', import.meta.url), 'utf8');
+ const css = () => readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+ 
+ app.page('/', html);
+ app.page('/app.js', () => new Response(js(), { contentType: 'text/javascript; charset=utf-8' }));
++app.page('/panel-controls.js', () => new Response(controlsJs(), { contentType: 'text/javascript; charset=utf-8' }));
+ app.page('/windows-ui.js', () => new Response(winJs(), { contentType: 'text/javascript; charset=utf-8' }));
+ app.page('/styles.css', () => new Response(css(), { contentType: 'text/css; charset=utf-8' }));
+ app.api('/api/telemetry', (data) => {
+diff -ruN agy-context-speed/sidecars/monitor/metrics.mjs agy-context-speed/sidecars/monitor/metrics.mjs
+--- agy-context-speed/sidecars/monitor/metrics.mjs	2026-11-27 09:49:17
++++ agy-context-speed/sidecars/monitor/metrics.mjs	2026-11-27 09:50:16
+@@ -2,12 +2,14 @@
+ import { openSync, closeSync, readSync, readdirSync, statSync, existsSync, readFileSync } from 'node:fs';
+ import { homedir } from 'node:os';
+ import { join } from 'node:path';
++import { fileURLToPath } from 'node:url';
+ import { readSummaries } from './summaries.mjs';
+ import { readRecentCalls } from './calls.mjs';
+-import { aggregatePriced, priceTurns } from './pricing.mjs';
+-import { analyzeSpeed, buildContextSnapshot, buildModelViews, cacheHitRate, getWhen, isUserStep } from './models.mjs';
++import { aggregatePriced, aggregateThirdParty, priceTurns } from './pricing.mjs';
++import {
++  MIN_STREAM_SECONDS, analyzeSpeed, buildContextSnapshot, cacheHitRate, detectModelRoles, getWhen, isUserStep, roleRank,
++} from './models.mjs';
+ 
+-const ROOT_SUFFIXES = ['antigravity', 'antigravity2', 'antigravity-ide', 'antigravity-cli'];
+ const MAX_SESSIONS = 60;
+ const READ_TAIL = 8 * 1024 * 1024;
+ const MAX_LINES = 8000;
+@@ -15,8 +17,13 @@
+ export const LIMIT_TIERS = [256_000, 512_000, 1_000_000];
+ const ALIGN_SLACK = 4;
+ 
+-export function appRoots(home = homedir()) {
+-  return ROOT_SUFFIXES.map(name => ({ name, dir: join(home, '.gemini', name) }));
++// AGY Lab copy: installed under <Lab data>/config/plugins/agy-context-speed/sidecars/monitor,
++// and reads only the Lab's own conversations in <Lab data>/agy-lab. The Lab may use a different
++// Google account from the original app, so the original app's data is never read.
++export const LAB_DATA = fileURLToPath(new URL('../../../../../', import.meta.url));
++
++export function appRoots() {
++  return [{ name: 'agy-lab', dir: join(LAB_DATA, 'agy-lab') }];
+ }
+ 
+ function safeStat(file) { try { return statSync(file); } catch { return null; } }
+@@ -173,15 +180,15 @@
+   && (turn.output ?? 0) === (call.output ?? 0) && (turn.cached ?? 0) === (call.cached ?? 0);
+ 
+ function applyCall(turn, call) {
+-  turn.timing = { stream: call.stream, ttft: call.ttft };
+-  turn.maxContext = call.maxContextTokens;
++  turn.timing = { stream: call.stream ?? turn.timing.stream, ttft: call.ttft ?? turn.timing.ttft };
++  if (call.maxContextTokens > 0) turn.maxContext = call.maxContextTokens;
+   if (call.cacheWrite != null) turn.cacheWrite ??= call.cacheWrite;
+   if (call.model || call.responseModel || call.responseModelFull || call.modelDisplayName) {
+     turn.modelInfo = {
+-      model: call.model,
+-      responseModel: call.responseModel,
+-      responseModelFull: call.responseModelFull,
+-      modelDisplayName: call.modelDisplayName,
++      model: call.model ?? turn.modelInfo?.model,
++      responseModel: call.responseModel || turn.modelInfo?.responseModel,
++      responseModelFull: call.responseModelFull || turn.modelInfo?.responseModelFull,
++      modelDisplayName: call.modelDisplayName || turn.modelInfo?.modelDisplayName,
+     };
+   }
+ }
+@@ -237,7 +244,7 @@
+     sessionOutput += u.output || 0;
+     turns.push({
+       stepIndex: s.step_index ?? i, when: getWhen(s), ...u,
+-      timing: collectTiming(s), modelInfo: getStepModel(s), index: i,
++      timing: collectTiming(s), modelInfo: getStepModel(s), maxContext: c, index: i,
+     });
+   }
+   if (!last && turns.length) {
+@@ -284,54 +291,91 @@
+   const stamp = `${log.file}:${log.size}:${log.modified}:${dbStamp(rootDir, uuid)}`;
+   const hit = subCache.get(`${rootDir}:${uuid}`);
+   if (hit?.stamp === stamp) return hit.data;
+-  const { turns, sessionInput, sessionCached, sessionOutput } =
+-    extractTurns(readJsonlTail(log.file), readRecentCalls(rootDir, uuid));
+-  const priced = priceTurns(turns, { fallbackWhen: log.modified, now });
+-  const data = { input: sessionInput, cached: sessionCached, output: sessionOutput, calls: turns.length, priced };
++  const { turns } = extractTurns(readJsonlTail(log.file), readRecentCalls(rootDir, uuid));
++  const data = priceTurns(turns, { fallbackWhen: log.modified, now });
+   subCache.set(`${rootDir}:${uuid}`, { stamp, data });
+   return data;
+ }
+ 
++function buildTelemetryView(steps, turns, { fallbackLimit, endedAt, limit = null }) {
++  const lastTurn = turns.at(-1);
++  let input = 0, cached = 0, output = 0;
++  for (const turn of turns) {
++    input += turn.input || 0;
++    cached += turn.cached || 0;
++    output += turn.output || 0;
++  }
++  return {
++    context: buildContextSnapshot(turns, {
++      limit: turns.findLast(t => t.maxContext > 0)?.maxContext || limit, fallbackLimit, limitTiers: LIMIT_TIERS,
++    }),
++    performance: {
++      ...analyzeSpeed(steps, turns, endedAt),
++      lastOutputTokens: lastTurn?.output ?? null,
++      lastThinkingTokens: lastTurn?.thinking ?? null,
++      lastResponseTokens: lastTurn?.response ?? null,
++    },
++    totals: { input, cached, output, modelCalls: turns.length, cacheHitRate: cacheHitRate(input, cached) },
++  };
++}
++
++/** One view per model actually called (native or third-party), ordered planner → executor → others. */
++function buildModelViews(steps, turns, priced, options) {
++  const groups = new Map();
++  const turnModels = [];
++  let activeModelKey = null;
++  for (const [i, entry] of priced.entries()) {
++    const { billing, source, modelId, rates, externalModel, unrecognizedLabel } = entry;
++    const name = rates?.name || externalModel || unrecognizedLabel || modelId;
++    turnModels.push(null);
++    if (!name) continue;
++    const key = billing ? `ext:${modelId || externalModel || unrecognizedLabel}:${source}`
++      : modelId ? `native:${modelId}` : `other:${unrecognizedLabel}`;
++    if (!groups.has(key)) groups.set(key, { key, name, source, isExternal: !!billing, turns: [] });
++    groups.get(key).turns.push(turns[i]);
++    turnModels[i] = { id: key };
++    activeModelKey = key;
++  }
++  const roles = detectModelRoles(steps, turns, turnModels);
++  const models = Array.from(groups.values(), ({ turns: group, ...model }) => ({
++    ...model, role: roles.get(model.key) || null, calls: group.length, active: model.key === activeModelKey,
++    ...buildTelemetryView(steps, group, options),
++  })).sort((a, b) => roleRank(a.role) - roleRank(b.role));
++  return { models, activeModelKey };
++}
++
++function summarizeNativeSubagents(entries, count) {
++  const cost = aggregatePriced(entries);
++  return {
++    count, modelCalls: cost.totalCalls,
++    input: cost.tokens.input, cached: cost.tokens.cached, output: cost.tokens.output,
++    totalTokens: cost.tokens.total, cost: cost.total, costMode: cost.mode, models: cost.models,
++    unpricedCalls: cost.unpricedCalls, unrecognizedModels: cost.unrecognizedModels,
++  };
++}
++
+ function analyzeStepsWithPriced(steps, options = {}) {
+   const fallbackLimit = numberOrNull(options.defaultContextLimit) || 256_000;
+-  const { turns, lastIdx, limit, sessionInput, sessionCached, sessionOutput, userTurns } =
+-    extractTurns(steps, options.calls || []);
+-  const recorded = turns.length;
+-  const lastTurn = turns.length ? turns[turns.length - 1] : null;
++  const { turns, lastIdx, limit, userTurns } = extractTurns(steps, options.calls || []);
+   const priced = priceTurns(turns, { fallbackWhen: options.endedAt, now: options.now });
+-  for (let i = 0; i < turns.length; i++) {
+-    turns[i].modelId = priced[i]?.modelId ?? null;
+-    turns[i].modelName = priced[i]?.rates?.name || priced[i]?.unrecognizedLabel || '';
+-  }
+-  const cost = aggregatePriced(priced);
+-  cost.primaryModels = cost.models;
+-  cost.primaryCalls = recorded;
+-  cost.subagentTotal = 0;
++  const viewOptions = { fallbackLimit, endedAt: options.endedAt };
++  const { models, activeModelKey } = buildModelViews(steps, turns, priced, viewOptions);
++  const totalView = buildTelemetryView(steps, turns, { ...viewOptions, limit });
++  const active = models.length > 1 ? models.find(m => m.active) : totalView;
++  const nativePriced = priced.filter(t => !t.billing);
++  const cost = aggregatePriced(nativePriced);
++  const thirdParty = aggregateThirdParty(priced);
+   return {
+     priced,
+     snapshot: {
+-      context: buildContextSnapshot(turns, { limit, fallbackLimit, limitTiers: LIMIT_TIERS }),
+-      performance: {
+-        ...analyzeSpeed(steps, turns, options.endedAt),
+-        lastOutputTokens: lastTurn?.output ?? null,
+-        lastThinkingTokens: lastTurn?.thinking ?? null,
+-        lastResponseTokens: lastTurn?.response ?? null,
+-      },
+-      totals: {
+-        input: sessionInput, cached: sessionCached, output: sessionOutput, modelCalls: recorded, userTurns,
+-        cacheHitRate: cacheHitRate(sessionInput, sessionCached),
+-        subagents: {
+-          count: 0, modelCalls: 0, input: 0, cached: 0, output: 0, totalTokens: 0,
+-          cost: null, costMode: 'unavailable', models: [], unpricedCalls: 0, unrecognizedModels: [],
+-        },
+-      },
+-      cost,
+-      models: buildModelViews(steps, turns, priced, {
+-        fallbackLimit, limitTiers: LIMIT_TIERS, sessionLimit: limit, endedAt: options.endedAt,
+-      }),
++      context: active.context, performance: active.performance,
++      totals: { ...totalView.totals, userTurns, subagents: summarizeNativeSubagents([], 0) },
++      cost: { ...cost, primaryModels: cost.models, primaryCalls: cost.totalCalls, subagentTotal: 0 },
++      thirdParty: { ...thirdParty, primaryCalls: thirdParty.totalCalls, subagentCalls: 0 },
++      models, activeModelKey,
+       recent: turns.slice(-12).reverse().map(t => ({
+         when: t.when, output: t.output, input: t.input, cache: t.cached,
+-        tps: t.timing.stream ? Math.round(10 * (t.output || 0) / t.timing.stream) / 10 : null,
++        tps: t.timing.stream >= MIN_STREAM_SECONDS ? Math.round(10 * (t.output || 0) / t.timing.stream) / 10 : null,
+       })),
+       lastStepIndex: lastIdx,
+     },
+@@ -342,43 +386,46 @@
+   return analyzeStepsWithPriced(steps, options).snapshot;
+ }
+ 
++function mergeSubagentUsage(snapshot, mainPriced, session, subagents, now) {
++  const allSubPriced = [], subNativePriced = [];
++  let subNativeCount = 0;
++  const totals = snapshot.totals;
++  for (const sub of subagents) {
++    const entries = readSubagentUsage(session.rootDir, sub, now);
++    const native = entries.filter(t => !t.billing);
++    allSubPriced.push(...entries);
++    subNativePriced.push(...native);
++    if (native.length > 0) subNativeCount++;
++    for (const entry of entries) {
++      totals.input += entry.input;
++      totals.cached += entry.cached;
++      totals.output += entry.output;
++    }
++  }
++  totals.modelCalls += allSubPriced.length;
++  totals.cacheHitRate = cacheHitRate(totals.input, totals.cached);
++  totals.subagents = summarizeNativeSubagents(subNativePriced, subNativeCount);
++
++  const primary = snapshot.cost;
++  const combined = aggregatePriced(mainPriced.filter(t => !t.billing).concat(subNativePriced));
++  snapshot.cost = {
++    ...combined, last: primary.last, lastModel: primary.lastModel || combined.lastModel,
++    primaryModels: primary.primaryModels, primaryCalls: primary.primaryCalls, subagentTotal: totals.subagents.cost ?? 0,
++  };
++  const thirdParty = aggregateThirdParty(mainPriced.concat(allSubPriced));
++  snapshot.thirdParty = {
++    ...thirdParty, primaryCalls: snapshot.thirdParty.primaryCalls,
++    subagentCalls: allSubPriced.length - subNativePriced.length,
++  };
++}
++
+ export function analyzeSession(session, options = {}) {
+   const parsed = readJsonlTail(session.file);
+   const { snapshot, priced: mainPriced } = analyzeStepsWithPriced(parsed, {
+     ...options, endedAt: session.modified, calls: readRecentCalls(session.rootDir, session.uuid),
+   });
+   const subagents = collectSubagents(session.rootDir, session.uuid);
+-  if (subagents.length) {
+-    let subInput = 0, subCached = 0, subOutput = 0, subCalls = 0;
+-    const allSubPriced = [];
+-    for (const sub of subagents) {
+-      const s = readSubagentUsage(session.rootDir, sub, options.now);
+-      subInput += s.input; subCached += s.cached; subOutput += s.output; subCalls += s.calls;
+-      allSubPriced.push(...s.priced);
+-    }
+-    const primaryCost = snapshot.cost;
+-    const combined = aggregatePriced([...mainPriced, ...allSubPriced]);
+-    const subCost = aggregatePriced(allSubPriced);
+-    const t = snapshot.totals;
+-    t.input += subInput; t.cached += subCached; t.output += subOutput; t.modelCalls += subCalls;
+-    t.cacheHitRate = cacheHitRate(t.input, t.cached);
+-    t.subagents = {
+-      count: subagents.length, modelCalls: subCalls,
+-      input: subInput, cached: subCached, output: subOutput,
+-      totalTokens: subInput + subCached + subOutput,
+-      cost: subCost.total,
+-      costMode: subCost.mode,
+-      models: subCost.models,
+-      unpricedCalls: subCost.unpricedCalls,
+-      unrecognizedModels: subCost.unrecognizedModels,
+-    };
+-    combined.last = primaryCost.last;
+-    combined.lastModel = primaryCost.lastModel || combined.lastModel;
+-    combined.primaryModels = primaryCost.models;
+-    combined.primaryCalls = mainPriced.length;
+-    combined.subagentTotal = subCost.total ?? 0;
+-    snapshot.cost = combined;
+-  }
++  if (subagents.length) mergeSubagentUsage(snapshot, mainPriced, session, subagents, options.now);
+   return {
+     session: {
+       id: session.id, title: session.title || '', workspace: session.workspace, source: session.source,
+diff -ruN agy-context-speed/sidecars/monitor/models.mjs agy-context-speed/sidecars/monitor/models.mjs
+--- agy-context-speed/sidecars/monitor/models.mjs	2026-11-27 09:49:17
++++ agy-context-speed/sidecars/monitor/models.mjs	2026-11-27 09:50:31
+@@ -5,6 +5,8 @@
+ import { aggregatePriced } from './pricing.mjs';
+ 
+ const SPEED_SAMPLE = 20;
++export const MIN_STREAM_SECONDS = 0.5;
++const MIN_SHORT_STREAM_SECONDS = 0.1;
+ const MIN_ESTIMATE_SECONDS = 2;
+ const MAX_ESTIMATE_SECONDS = 600;
+ 
+@@ -49,11 +51,16 @@
+   const calls = turns.filter(t => t.output > 0)
+     .map(t => ({ turn: t, seconds: callSeconds(steps, t, endedAt) }));
+   const timed = calls.filter(c => c.seconds);
+-  const streamed = timed.filter(c => c.turn.timing.stream).slice(-SPEED_SAMPLE);
+-  const sample = streamed.length ? streamed : timed.slice(-SPEED_SAMPLE);
++  const streamed = timed.filter(c => c.turn.timing.stream);
++  // Tool calls can arrive all at once; dividing by the sub-millisecond burst is not throughput.
++  const sustained = streamed.filter(c => c.seconds >= MIN_STREAM_SECONDS);
++  const measured = sustained.length ? sustained : streamed.filter(c => c.seconds >= MIN_SHORT_STREAM_SECONDS);
++  const sample = (streamed.length ? measured : timed).slice(-SPEED_SAMPLE);
++  const mode = !sample.length ? 'unavailable' : streamed.length ? 'streaming' : 'effective';
+   const sum = (pick) => sample.reduce((total, c) => total + pick(c), 0);
+-  const tps = streamed.length ? sum(c => c.turn.output) / sum(c => c.seconds)
+-    : sample.length ? median(sample.map(c => c.turn.output / c.seconds)) : null;
++  let tps = null;
++  if (mode === 'streaming') tps = sum(c => c.turn.output) / sum(c => c.seconds);
++  if (mode === 'effective') tps = median(sample.map(c => c.turn.output / c.seconds));
+   const firstTokens = turns.map(t => t.timing.ttft).filter(v => v != null).slice(-SPEED_SAMPLE);
+   const last = calls.at(-1);
+   const history = sample.map(c => ({
+@@ -67,9 +74,10 @@
+   }));
+   return {
+     tps: tps === null ? null : round1(tps),
+-    mode: streamed.length ? 'streaming' : sample.length ? 'effective' : 'unavailable',
++    mode,
+     sampleCount: sample.length,
+-    lastTps: last?.seconds ? round1(last.turn.output / last.seconds) : null,
++    lastTps: last?.seconds && (last.seconds >= MIN_STREAM_SECONDS || mode === 'effective')
++      ? round1(last.turn.output / last.seconds) : null,
+     durationSeconds: last?.seconds ?? null,
+     ttftSeconds: last?.turn.timing.ttft ?? null,
+     ttftMedianSeconds: firstTokens.length ? median(firstTokens) : null,
+@@ -139,7 +147,7 @@
+   return roles;
+ }
+ 
+-const roleRank = (role) => (role === 'planner' ? 0 : role === 'executor' ? 1 : 2);
++export const roleRank = (role) => (role === 'planner' ? 0 : role === 'executor' ? 1 : 2);
+ 
+ /** Build per-model telemetry views ordered as planner → executor → other models. */
+ export function buildModelViews(steps, turns, priced, {
+diff -ruN agy-context-speed/sidecars/monitor/panel-controls.js agy-context-speed/sidecars/monitor/panel-controls.js
+--- agy-context-speed/sidecars/monitor/panel-controls.js	1969-12-31 19:00:00
++++ agy-context-speed/sidecars/monitor/panel-controls.js	2026-11-27 09:50:44
+@@ -0,0 +1,197 @@
++(() => {
++const $ = (id) => document.getElementById(id);
++const modelNodes = new WeakMap();
++
++function setTip(el, text) {
++  const tip = Array.isArray(text) ? text.filter(Boolean).join('\n') : text;
++  if (tip) {
++    if (el.dataset.tip !== tip) el.dataset.tip = tip;
++  } else {
++    delete el.dataset.tip;
++  }
++}
++
++// Reuse keyed elements across polling; don't move a row while someone is reading it.
++function syncRows(list, items, keyOf, create, update) {
++  const previous = modelNodes.get(list) || new Map();
++  const keepOrder = list.matches(':hover') || list.contains(document.activeElement);
++  const next = new Map();
++  for (const [i, item] of items.entries()) {
++    const key = keyOf(item);
++    const row = previous.get(key) || create(item);
++    update(row, item, i);
++    next.set(key, row);
++  }
++  for (const [key, row] of previous) {
++    if (!next.has(key)) row.remove();
++  }
++  let cursor = list.firstChild;
++  for (const row of next.values()) {
++    if (keepOrder && row.parentNode === list) continue;
++    if (keepOrder) list.append(row);
++    else if (row !== cursor) list.insertBefore(row, cursor);
++    else cursor = cursor.nextSibling;
++  }
++  modelNodes.set(list, next);
++}
++
++function createTooltip() {
++  const tip = $('csTooltip');
++  const main = document.querySelector('main');
++  const trigger = (node) => node instanceof Element ? node.closest('[data-tip]') : null;
++  let hovered = null, focused = null, shown = null, preferFocus = false;
++
++  function render() {
++    const candidates = preferFocus ? [focused, hovered] : [hovered, focused];
++    const anchor = candidates.find(el => el?.isConnected && el.dataset.tip && el.getClientRects().length);
++    if (shown && shown !== anchor) shown.removeAttribute('aria-describedby');
++    shown = anchor;
++    tip.hidden = !anchor;
++    if (!anchor) return;
++    if (tip.textContent !== anchor.dataset.tip) tip.textContent = anchor.dataset.tip;
++    if (anchor.getAttribute('aria-describedby') !== tip.id) anchor.setAttribute('aria-describedby', tip.id);
++    const r = anchor.getBoundingClientRect();
++    const gap = 6;
++    const width = document.documentElement.clientWidth;
++    const height = document.documentElement.clientHeight;
++    const above = r.top - tip.offsetHeight - gap;
++    const y = above >= gap ? above : r.bottom + gap;
++    tip.style.left = `${Math.max(gap, Math.min(width - tip.offsetWidth - gap, (r.left + r.right - tip.offsetWidth) / 2))}px`;
++    tip.style.top = `${Math.max(gap, Math.min(height - tip.offsetHeight - gap, y))}px`;
++  }
++
++  function dismiss() {
++    hovered = focused = null;
++    render();
++  }
++
++  main.addEventListener('pointerover', (e) => {
++    if (e.pointerType === 'touch') return;
++    hovered = trigger(e.target);
++    preferFocus = false;
++    render();
++  });
++  main.addEventListener('pointerout', (e) => {
++    if (e.pointerType === 'touch') return;
++    hovered = main.contains(e.relatedTarget) ? trigger(e.relatedTarget) : null;
++    render();
++  });
++  main.addEventListener('focusin', (e) => {
++    focused = e.target.matches(':focus-visible') ? trigger(e.target) : null;
++    preferFocus = true;
++    render();
++  });
++  main.addEventListener('focusout', () => {
++    focused = null;
++    render();
++  });
++  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && shown) dismiss(); });
++  document.addEventListener('scroll', dismiss, true);
++  window.addEventListener('blur', dismiss);
++  window.addEventListener('resize', render);
++  return { render, dismiss };
++}
++
++function bindTabKeys(tabList) {
++  tabList.addEventListener('keydown', (e) => {
++    const tabs = [...tabList.querySelectorAll('[role="tab"]:not([hidden])')];
++    const index = tabs.indexOf(e.target);
++    if (index < 0) return;
++    let next;
++    if (e.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
++    else if (e.key === 'ArrowRight') next = (index + 1) % tabs.length;
++    else if (e.key === 'Home') next = 0;
++    else if (e.key === 'End') next = tabs.length - 1;
++    else return;
++    e.preventDefault();
++    tabs[next].focus();
++    tabs[next].click();
++  });
++}
++
++const ROLE_LABELS = { planner: '规划', executor: '执行' };
++
++function createModelSwitcher({ fmt, pct, secs, onChange }) {
++  const list = $('modelSwitcher');
++  const auto = $('followActiveModel');
++  const tabs = $('modelTabs');
++  let sessionId, pinnedKey = null, nextTabId = 0;
++
++  function select(tab, active) {
++    tab.classList.toggle('active', active);
++    tab.setAttribute('aria-selected', String(active));
++    tab.tabIndex = active ? 0 : -1;
++    if (active) $('modelMetrics').setAttribute('aria-labelledby', tab.id);
++  }
++
++  function createTab(model) {
++    const tab = document.createElement('button');
++    tab.type = 'button';
++    tab.className = 'seg-tab model-tab';
++    tab.id = `csModelTab-${nextTabId++}`;
++    tab.setAttribute('role', 'tab');
++    tab.setAttribute('aria-controls', 'modelMetrics');
++    const dot = document.createElement('span');
++    dot.className = 'model-active-dot';
++    dot.setAttribute('aria-hidden', 'true');
++    const role = document.createElement('span');
++    role.className = 'role-tag';
++    const name = document.createElement('span');
++    name.className = 'model-tab-name';
++    const context = document.createElement('span');
++    context.className = 'model-tab-context';
++    tab.append(dot, role, name, context);
++    tab.addEventListener('click', () => { pinnedKey = model.key; onChange(); });
++    return tab;
++  }
++
++  function updateTab(tab, m, activeKey) {
++    const active = m.key === activeKey;
++    tab.dataset.current = String(active);
++    const [, role, name, context] = tab.children;
++    const roleLabel = ROLE_LABELS[m.role] || '';
++    role.textContent = roleLabel;
++    name.textContent = m.name;
++    context.textContent = pct(m.context.percent);
++    select(tab, pinnedKey === m.key);
++    const p = m.performance;
++    const speed = p.tps == null ? '—' : `${p.tps} tok/s${p.mode === 'effective' ? '（估算）' : ''}`;
++    setTip(tab, [
++      `${m.name}${roleLabel ? `（${roleLabel}）` : ''}${active ? ' · 当前活动' : ''}`,
++      `来源：${m.source || '原生'} · ${m.calls} 次调用`,
++      `上下文：${fmt(m.context.used)} / ${fmt(m.context.ceiling)} · ${pct(m.context.percent)}`,
++      `缓存读：${fmt(m.context.cache)} · 新输入：${fmt(m.context.input)}`,
++      `生成速度：${speed} · 首字延迟：${secs(p.ttftSeconds)}`,
++    ]);
++  }
++
++  function render(snapshot) {
++    if (sessionId !== snapshot?.session.id) {
++      sessionId = snapshot?.session.id;
++      pinnedKey = null;
++    }
++    const models = snapshot?.models || [];
++    const current = models.find(m => m.key === snapshot.activeModelKey);
++    const pinned = models.find(m => m.key === pinnedKey);
++    if (!pinned) pinnedKey = null;
++    list.hidden = models.length < 2;
++    const metrics = $('modelMetrics');
++    if (list.hidden) {
++      metrics.removeAttribute('role');
++      metrics.removeAttribute('aria-labelledby');
++      return snapshot;
++    }
++    metrics.setAttribute('role', 'tabpanel');
++    select(auto, pinnedKey === null);
++    setTip(auto, current ? `跟随当前活动模型：${current.name}` : '跟随当前活动模型');
++    syncRows(tabs, models, m => m.key, createTab, (tab, m) => updateTab(tab, m, current?.key));
++    return pinned || current || snapshot;
++  }
++
++  auto.addEventListener('click', () => { pinnedKey = null; onChange(); });
++  bindTabKeys(list);
++  return { render };
++}
++
++window.__agyPanelControls = { createTooltip, createModelSwitcher, bindTabKeys, setTip, syncRows };
++})();
+diff -ruN agy-context-speed/sidecars/monitor/pricing.mjs agy-context-speed/sidecars/monitor/pricing.mjs
+--- agy-context-speed/sidecars/monitor/pricing.mjs	2026-11-27 09:49:17
++++ agy-context-speed/sidecars/monitor/pricing.mjs	2026-11-27 09:49:17
+@@ -6,6 +6,48 @@
+ const ARGON_INTRO_END = Date.UTC(2026, 11, 1); // 2026-12-01 00:00:00 UTC
+ const FLASH3_INTRO_END = Date.UTC(2027, 0, 1); // 2027-01-01 00:00:00 UTC
+ 
++// OpenAI Standard rates, developers.openai.com/api/docs/pricing (checked 2026-11-26): API prompts
++// above 272K input tokens use the long-context rates for the whole request; ChatGPT subscription
++// usage stays at the short-context rates. Cache writes use the 30-minute rate.
++// [id, name, short {input, cached, cacheWrite, output}, long {...}]
++const OPENAI_RATES = [
++  ['gpt-6.2-astra', 'GPT-6.2 Astra', [8, 0.4, 10, 40], [16, 0.8, 20, 60]],
++  ['gpt-6.2-sol', 'GPT-6.2 Sol', [2, 0.1, 2.5, 10], [4, 0.2, 5, 15]],
++  ['gpt-6.1-sol', 'GPT-6.1 Sol', [2, 0.1, 2.5, 10], [4, 0.2, 5, 15]],
++  ['gpt-6.1-terra', 'GPT-6.1 Terra', [1, 0.05, 1.25, 5], [2, 0.1, 2.5, 7.5]],
++  ['gpt-6-astra', 'GPT-6 Astra', [10, 1, 12.5, 50], [20, 2, 25, 75]],
++  ['gpt-6-sol', 'GPT-6 Sol', [2, 0.2, 2.5, 10], [4, 0.4, 5, 15]],
++  ['gpt-6-luna', 'GPT-6 Luna', [0.1, 0.01, 0.125, 0.5], [0.2, 0.02, 0.25, 0.75]],
++  ['gpt-5.6-sol', 'GPT-5.6 Sol', [4, 0.4, 5, 20], [8, 0.8, 10, 30]],
++  ['gpt-5.6-terra', 'GPT-5.6 Terra', [2, 0.2, 2.5, 12], [4, 0.4, 5, 18]],
++  ['gpt-5.6-luna', 'GPT-5.6 Luna', [0.2, 0.02, 0.25, 1.2], [0.4, 0.04, 0.5, 1.8]],
++];
++const openAiTier = (upTo, [input, cached, cacheWrite, output]) => ({ upTo, input, cached, cacheWrite, output });
++const OPENAI_CATALOG = Object.fromEntries(OPENAI_RATES.map(([id, name, short, long]) =>
++  [id, { name, tiers: [openAiTier(272_000, short), openAiTier(Infinity, long)] }]));
++
++// AGY Lab labels external models "<model> · <ChatGPT 订阅 | provider host> (<effort>)".
++const EXTERNAL_LABEL = /^([\w.-]+) · (.+?)(?: \([^)]*\))?$/;
++const SUBSCRIPTION_SOURCE = 'ChatGPT 订阅';
++const OPENAI_SOURCES = new Set([SUBSCRIPTION_SOURCE, 'api.openai.com']);
++
++export function parseExternalModel(info) {
++  const label = typeof info === 'string' ? info : info?.modelDisplayName;
++  const matched = stripModelPath(label).match(EXTERNAL_LABEL);
++  if (!matched) return null;
++  const [, model, source] = matched;
++  return { model, source, billing: source === SUBSCRIPTION_SOURCE ? 'chatgpt' : 'key' };
++}
++
++export function externalBilling(info) {
++  return parseExternalModel(info)?.billing ?? null;
++}
++
++function openAiModelId(external) {
++  const id = external.model.toLowerCase();
++  return Object.hasOwn(OPENAI_CATALOG, id) && OPENAI_SOURCES.has(external.source) ? id : null;
++}
++
+ export const MODEL_CATALOG = {
+   'gemini-4-hydrogen': { name: 'Gemini 4 Hydrogen', input: 1.5, cached: 0.075, output: 7.5 },
+   'gemini-4-argon': {
+@@ -82,6 +124,7 @@
+   'claude-opus-4': { name: 'Claude Opus 4', input: 15.0, cached: 1.5, cacheWrite: 18.75, output: 75.0 },
+   'claude-sonnet-4': { name: 'Claude Sonnet 4', input: 3.0, cached: 0.3, cacheWrite: 3.75, output: 15.0 },
+   'gpt-oss-120b': { name: 'GPT-OSS 120B', input: 0.15, cached: 0.075, output: 0.6 },
++  ...OPENAI_CATALOG,
+ };
+ 
+ const NAME_PATTERNS = [
+@@ -172,6 +215,8 @@
+ export function matchModelName(raw) {
+   const cleaned = stripModelPath(raw);
+   if (!cleaned) return null;
++  const external = parseExternalModel(cleaned);
++  if (external) return openAiModelId(external);
+   for (const [pattern, id] of NAME_PATTERNS) {
+     if (pattern.test(cleaned)) return id;
+   }
+@@ -186,6 +231,9 @@
+     return matchModelName(cleaned) || ROUTE_ALIASES[cleaned.toLowerCase()] || null;
+   }
+   if (typeof info === 'number') return ENUM_TO_ID[info] || null;
++  // The provider label takes precedence over the host's placeholder enum and response aliases.
++  const external = parseExternalModel(info);
++  if (external) return openAiModelId(external);
+   const resp = stripModelPath(info.responseModel);
+   const full = stripModelPath(info.responseModelFull);
+   return matchModelName(full)
+@@ -223,7 +271,9 @@
+   const cached = turn.cached || 0;
+   const cacheWrite = turn.cacheWrite || 0;
+   const output = turn.output || 0;
+-  const rates = activeRates(modelId, input + cached + cacheWrite, turn.when ?? fallbackTime);
++  // ChatGPT subscription usage has no long-context surcharge; API calls above 272K input do.
++  const prompt = turn.billing === 'chatgpt' ? 0 : input + cached + cacheWrite;
++  const rates = activeRates(modelId, prompt, turn.when ?? fallbackTime);
+   if (!rates) return null;
+   const inputCost = (input / 1e6) * rates.input;
+   const cacheCost = (cached / 1e6) * rates.cached + (cacheWrite / 1e6) * rates.cacheWrite;
+@@ -249,25 +299,34 @@
+   return disp || id || (info.model ? `#${info.model}` : '');
+ }
+ 
+-/**
+- * 仅在相邻已知调用指明同一模型（或整场仅出现单一已知模型）时，为孤立未配对的调用补全模型归属，
+- * 避免跨模型切换时把一次调用误算成另一种价格。
+- */
++const modelIdentity = ({ id, external }) => [id, external?.model, external?.source].join('\0');
++
++/** 仅在明确只有一种模型来源或缺口两侧来源一致时补齐缺失的记录。 */
+ function resolveTurnModels(turns) {
+-  const direct = turns.map(t => resolveModelId(t.modelInfo));
+-  const uniqueKnown = [...new Set(direct.filter(Boolean))];
+-  return direct.map((id, i) => {
+-    if (id) return { id, inferred: false };
+-    if (!turns[i].modelInfo && uniqueKnown.length === 1) {
+-      return { id: uniqueKnown[0], inferred: true };
++  const direct = turns.map(({ modelInfo }) => ({
++    id: resolveModelId(modelInfo), external: parseExternalModel(modelInfo),
++  }));
++  const candidates = new Set(direct.filter(m => m.id || m.external).map(modelIdentity));
++  const only = candidates.size === 1 && direct.find(m => m.id || m.external);
++  const safeDefault = only && !turns.some((t, i) => t.modelInfo && !direct[i].id && !direct[i].external)
++    ? only : null;
++  let next = 0;
++  let previous;
++  return direct.map((model, i) => {
++    if (turns[i].modelInfo) {
++      previous = model;
++      return model;
+     }
+-    if (!turns[i].modelInfo && uniqueKnown.length > 1) {
+-      let prev = null, next = null;
+-      for (let j = i - 1; j >= 0; j--) { if (direct[j]) { prev = direct[j]; break; } }
+-      for (let j = i + 1; j < direct.length; j++) { if (direct[j]) { next = direct[j]; break; } }
+-      if (prev && prev === next) return { id: prev, inferred: true };
++    if (safeDefault) return { ...safeDefault, inferred: true };
++    if (next <= i) {
++      next = i + 1;
++      while (next < turns.length && !turns[next].modelInfo) next++;
+     }
+-    return { id: null, inferred: false };
++    if ((previous?.id || previous?.external) && next < turns.length &&
++        modelIdentity(previous) === modelIdentity(direct[next])) {
++      return { ...previous, inferred: true };
++    }
++    return model;
+   });
+ }
+ 
+@@ -277,25 +336,17 @@
+   const fallbackWhen = options.fallbackWhen ?? null;
+   const resolved = resolveTurnModels(turns);
+   return turns.map((turn, i) => {
+-    const { id, inferred } = resolved[i];
+-    const input = turn.input || 0;
+-    const cached = turn.cached || 0;
+-    const output = turn.output || 0;
+-    const when = turn.when ?? fallbackWhen;
+-    if (!id) {
+-      return {
+-        when, input, cached, output, modelId: null, rates: null,
+-        inputCost: 0, cacheCost: 0, outputCost: 0, totalCost: 0, cacheSaved: 0,
+-        inferred: false, unrecognizedLabel: unknownLabel(turn.modelInfo),
+-      };
+-    }
+-    const priced = priceCall(turn, id, fallbackTime);
++    const { id, inferred = false, external } = resolved[i];
++    const billing = external?.billing ?? null;
++    const priced = id ? priceCall({ ...turn, billing }, id, fallbackTime) : null;
+     return {
+-      when, input, cached, output, modelId: priced ? id : null, rates: priced?.rates ?? null,
++      when: turn.when ?? fallbackWhen, input: turn.input || 0, cached: turn.cached || 0, output: turn.output || 0,
++      modelId: priced ? id : null, rates: priced?.rates ?? null, billing,
++      source: external?.source || '', externalModel: external?.model || '',
+       inputCost: priced?.input ?? 0, cacheCost: priced?.cached ?? 0,
+       outputCost: priced?.output ?? 0, totalCost: priced?.total ?? 0,
+       cacheSaved: priced?.cacheSaved ?? 0,
+-      inferred, unrecognizedLabel: priced ? '' : unknownLabel(turn.modelInfo),
++      inferred, unrecognizedLabel: priced ? '' : external?.model || unknownLabel(turn.modelInfo),
+     };
+   });
+ }
+@@ -373,6 +424,32 @@
+   };
+ }
+ 
++export function aggregateThirdParty(entries) {
++  const groups = new Map();
++  const external = entries.filter(e => e.billing);
++  for (const entry of external) {
++    const id = entry.modelId || entry.externalModel || entry.unrecognizedLabel;
++    const key = `${id}::${entry.source}`;
++    if (!groups.has(key)) groups.set(key, []);
++    groups.get(key).push(entry);
++  }
++  const models = Array.from(groups, ([key, group]) => {
++    const first = group[0];
++    const summary = aggregatePriced(group);
++    return {
++      id: first.modelId || first.externalModel || first.unrecognizedLabel, key,
++      name: first.rates?.name || first.externalModel || first.unrecognizedLabel || '第三方模型',
++      source: first.source, billing: first.billing, priced: summary.pricedCalls > 0,
++      calls: summary.totalCalls, total: summary.total, inputTokens: summary.tokens.input,
++      cachedTokens: summary.tokens.cached, outputTokens: summary.tokens.output, totalTokens: summary.tokens.total,
++      inputCost: summary.input, cacheCost: summary.cached, outputCost: summary.output,
++      cacheSaved: summary.cacheSaved, rates: summary.lastModel,
++    };
++  });
++  models.sort((a, b) => (b.total ?? -1) - (a.total ?? -1) || b.totalTokens - a.totalTokens);
++  return { ...aggregatePriced(external), models };
++}
++
+ /** 汇总整场会话的等价 API 价格、单模型明细与覆盖情况。 */
+ export function summarizeCosts(turns, options = {}) {
+   return aggregatePriced(priceTurns(turns, options));
+@@ -391,8 +468,8 @@
+   { id: 'claude', name: 'Claude / GPT', hint: 'Claude · GPT-OSS' },
+ ]);
+ 
+-/** 返回规范模型所属的额度池 ID；未识别模型返回 null。 */
+-export function modelPool(modelId) {
+-  if (!modelId || !(modelId in MODEL_CATALOG)) return null;
++/** 第三方及未识别调用不属于原生订阅额度池。 */
++export function modelPool(modelId, billing = null) {
++  if (billing || !modelId || !(modelId in MODEL_CATALOG)) return null;
+   return CLAUDE_POOL.has(modelId) ? 'claude' : 'gemini';
+ }
+diff -ruN agy-context-speed/sidecars/monitor/settings.mjs agy-context-speed/sidecars/monitor/settings.mjs
+--- agy-context-speed/sidecars/monitor/settings.mjs	2026-11-27 09:49:17
++++ agy-context-speed/sidecars/monitor/settings.mjs	2026-11-27 09:49:17
+@@ -3,11 +3,10 @@
+  * 面板页面每次启动端口都会变，localStorage 无法跨重启保留，所以由后端持久化。
+  */
+ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+-import { homedir } from 'node:os';
+ import { dirname, join } from 'node:path';
+-import { LIMIT_TIERS } from './metrics.mjs';
++import { LAB_DATA, LIMIT_TIERS } from './metrics.mjs';
+ 
+-const FILE = join(homedir(), '.gemini', 'antigravity', 'plugin_data', 'agy-context-speed', 'settings.json');
++const FILE = join(LAB_DATA, 'agy-lab', 'plugin_data', 'agy-context-speed', 'settings.json');
+ const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+ export const PLANS = Object.freeze(['pro', 'ultra', 'free']);
+ const POOL_IDS = ['gemini', 'claude'];
+diff -ruN agy-context-speed/sidecars/monitor/styles.css agy-context-speed/sidecars/monitor/styles.css
+--- agy-context-speed/sidecars/monitor/styles.css	2026-11-27 09:49:17
++++ agy-context-speed/sidecars/monitor/styles.css	2026-11-27 09:51:13
+@@ -144,38 +144,46 @@
+   text-align: center;
+ }
+ 
+-.model-bar {
++.model-switcher,
++.model-tabs {
+   display: flex;
+-  justify-content: center;
+-  margin: 2px 0 4px;
++  gap: 3px;
+ }
+ 
+-.seg-models {
+-  max-width: 100%;
++.model-switcher {
++  align-items: center;
+   overflow-x: auto;
+-  scrollbar-width: none;
++  padding: 3px;
++  background: var(--cs-pill-bg);
++  border-radius: 6px;
+ }
+ 
+-.seg-models::-webkit-scrollbar {
+-  display: none;
+-}
+-
+-.seg-models .seg-tab {
++.model-tab {
+   display: inline-flex;
++  flex: none;
+   align-items: center;
+   gap: 4px;
+   white-space: nowrap;
+ }
+ 
+-.live-dot {
+-  display: inline-block;
+-  flex: none;
++.model-tab-name,
++.rank-name > span {
++  overflow: hidden;
++  text-overflow: ellipsis;
++}
++
++.model-tab-name { max-width: 11em; }
++.model-tab-context { font-variant-numeric: tabular-nums; }
++
++.model-active-dot {
+   width: 5px;
+   height: 5px;
+   border-radius: 50%;
+-  background: var(--cs-green);
++  background: var(--cs-muted);
+ }
+ 
++.model-tab[data-current="true"] .model-active-dot { background: var(--cs-green); }
++
+ /* 顶部双仪表（等宽两列、严格等高对称） */
+ .gauges {
+   display: grid;
+@@ -202,7 +210,7 @@
+   cursor: pointer;
+ }
+ 
+-.gauge-btn:disabled {
++.gauge-btn[aria-disabled="true"] {
+   cursor: default;
+ }
+ 
+@@ -373,11 +381,11 @@
+   cursor: pointer;
+ }
+ 
+-.cap:hover:not(:disabled) {
++.cap:hover:not([aria-disabled="true"]) {
+   color: var(--cs-text);
+ }
+ 
+-.cap:disabled {
++.cap[aria-disabled="true"] {
+   text-decoration: none;
+   cursor: default;
+ }
+@@ -431,6 +439,8 @@
+ .dot-purple { background: var(--cs-purple); }
+ .dot-teal { background: var(--cs-teal); }
+ 
++.native-cost { margin-top: 4px; }
++
+ .breakdown {
+   display: flex;
+   flex-direction: column;
+@@ -464,22 +474,10 @@
+   color: var(--cs-muted);
+ }
+ 
+-.kv-click {
+-  cursor: pointer;
+-  border-radius: 4px;
+-  padding: 1px 4px 1px 10px;
+-  margin: 0 -4px;
+-  transition: background 0.12s ease;
++.role-tag:empty {
++  display: none;
+ }
+ 
+-.kv-click:hover {
+-  background: var(--cs-pill-bg);
+-}
+-
+-.kv-click.kv-selected {
+-  background: color-mix(in srgb, var(--cs-blue) 12%, transparent);
+-}
+-
+ /* 全会话汇总 */
+ .summary {
+   display: flex;
+@@ -588,52 +586,25 @@
+   color: var(--cs-red);
+ }
+ 
+-/* 轻量即显提示（避免 Electron WebView 原生 title 延迟或不弹出） */
+-[data-tip] {
+-  position: relative;
+-}
+-
+-[data-tip]::after {
+-  content: attr(data-tip);
+-  position: absolute;
+-  right: 0;
+-  bottom: calc(100% + 6px);
++/* Shared viewport-anchored tip; never clipped by the row or tab scroller. */
++#csTooltip {
++  position: fixed;
+   z-index: 20;
+   width: max-content;
+-  max-width: 210px;
+-  padding: 4px 7px;
++  max-width: min(270px, calc(100vw - 12px));
++  max-height: calc(100vh - 12px);
++  overflow: hidden;
++  overflow-wrap: anywhere;
++  padding: 5px 8px;
+   border-radius: 5px;
+   background: var(--cs-text);
+   color: var(--cs-bg);
+-  font-size: 10.5px;
+-  font-weight: 500;
+-  line-height: 1.35;
+-  white-space: normal;
+-  text-align: left;
++  font: 500 11px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
++  white-space: pre-line;
+   pointer-events: none;
+-  opacity: 0;
+-  transform: translateY(2px);
+-  transition: opacity 0.12s ease 0.08s, transform 0.12s ease 0.08s;
+   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.18);
+ }
+ 
+-[data-tip]:hover::after,
+-[data-tip]:focus-visible::after {
+-  opacity: 1;
+-  transform: translateY(0);
+-}
+-
+-.topbar [data-tip]::after {
+-  bottom: auto;
+-  top: calc(100% + 5px);
+-  transform: translateY(-2px);
+-}
+-
+-.topbar [data-tip]:hover::after,
+-.topbar [data-tip]:focus-visible::after {
+-  transform: translateY(0);
+-}
+-
+ /* 额度池与周期校准设置抽屉 */
+ .win-settings {
+   display: flex;
+@@ -824,11 +795,14 @@
+   font-variant-numeric: tabular-nums;
+ }
+ 
+-.rank-tok {
++.rank-tok,
++.rank-call-count {
+   color: var(--cs-muted);
+   font-size: 10.5px;
+ }
+ 
++.rank-source { color: var(--cs-muted); font-size: 10.5px; flex: 0 1 auto; }
++
+ .rank-cost {
+   min-width: 44px;
+   text-align: right;
+@@ -846,6 +820,12 @@
+   color: var(--cs-muted);
+   font-size: 11.5px;
+   text-align: center;
++}
++
++[data-tip]:focus-visible,
++.seg-tab:focus-visible {
++  outline: 1px solid var(--cs-blue);
++  outline-offset: 1px;
+ }
+ 
+ .note {
+diff -ruN agy-context-speed/sidecars/monitor/windows-ui.js agy-context-speed/sidecars/monitor/windows-ui.js
+--- agy-context-speed/sidecars/monitor/windows-ui.js	2026-11-27 09:49:17
++++ agy-context-speed/sidecars/monitor/windows-ui.js	2026-11-27 09:49:17
+@@ -3,6 +3,7 @@
+  * 采用经典脚本挂载（而非 ES Module），兼容 Sidecar WebView 对 module 脚本的限制。
+  */
+ (() => {
++const { bindTabKeys, setTip, syncRows } = window.__agyPanelControls;
+ const MODEL_DOTS = ['dot-blue', 'dot-orange', 'dot-green', 'dot-purple', 'dot-teal'];
+ const POOL_DOTS = { gemini: 'dot-blue', claude: 'dot-orange' };
+ 
+@@ -34,7 +35,8 @@
+   let userPickedTab = false;
+   let calScope = 'week';
+   let lastWindows = null;
+-  let modelsSignature = '';
++  let thirdScope = 'session';
++  let sessionThirdParty;
+   let poolCfgSignature = '';
+ 
+   const poolCostText = (p) => (p.total != null ? usd(p.total) : (p.tokens?.total > 0 ? '—' : '$0.00'));
+@@ -99,7 +101,7 @@
+     head.className = 'pool-cfg-head';
+     const title = document.createElement('span');
+     title.textContent = p.name;
+-    title.title = p.hint || '';
++    setTip(title, p.hint);
+     const actions = document.createElement('div');
+     actions.className = 'pool-cfg-actions';
+ 
+@@ -110,9 +112,9 @@
+     resetBtn.type = 'button';
+     resetBtn.className = 'mini-btn';
+     resetBtn.textContent = '重置';
+-    resetBtn.title = scope === 'week'
++    setTip(resetBtn, scope === 'week'
+       ? '清零周限额与 5 时窗口，等待下一次调用重新计时'
+-      : '清零 5 时窗口，等待下一次调用重新计时';
++      : '清零 5 时窗口，等待下一次调用重新计时');
+     actions.append(cycle, resetBtn);
+     head.append(title, actions);
+ 
+@@ -215,95 +217,148 @@
+     }
+   }
+ 
+-  function buildRankRow(m, idx, showDot = true) {
++  function createRankRow() {
+     const row = document.createElement('div');
+     row.className = 'rank-row';
++    row.tabIndex = 0;
+     const left = document.createElement('span');
+     left.className = 'rank-name';
+-    if (showDot) {
+-      const dot = document.createElement('i');
+-      dot.className = `dot ${MODEL_DOTS[idx % MODEL_DOTS.length]}`;
+-      left.append(dot);
+-    }
+-    const name = document.createElement('span');
+-    name.textContent = m.name;
+-    left.append(name);
+-
+     const right = document.createElement('span');
+     right.className = 'rank-right';
+-    const tok = document.createElement('span');
+-    tok.className = 'rank-tok';
+-    tok.textContent = fmt(m.totalTokens);
+-    const cost = document.createElement('span');
+-    cost.className = 'rank-cost';
+-    cost.textContent = usd(m.total);
+-    right.append(tok, cost);
+-
+-    row.title = `${m.name} · ${m.calls} 次调用\n入 ${fmt(m.inputTokens)} · 缓 ${fmt(m.cachedTokens)} · 出 ${fmt(m.outputTokens)}`;
++    for (const name of ['dot', '', 'rank-source']) {
++      const node = document.createElement('span');
++      node.className = name;
++      left.append(node);
++    }
++    for (const name of ['rank-call-count', 'rank-tok', 'rank-cost']) {
++      const node = document.createElement('span');
++      node.className = name;
++      right.append(node);
++    }
+     row.append(left, right);
+     return row;
+   }
+ 
+-  function buildPoolBlock(p, scope, companion, hasFiveHour) {
++  function updateRankRow(row, m, idx, showDot, thirdParty = false) {
++    const [left, right] = row.children;
++    const [dot, name, source] = left.children;
++    const [calls, tokens, cost] = right.children;
++    dot.className = `dot ${MODEL_DOTS[idx % MODEL_DOTS.length]}`;
++    dot.hidden = !showDot;
++    name.textContent = m.name;
++    source.textContent = m.source || '';
++    source.hidden = !thirdParty || !m.source;
++    calls.textContent = `${m.calls} 次`;
++    calls.hidden = !thirdParty;
++    tokens.textContent = fmt(m.totalTokens);
++    cost.textContent = usd(m.total);
++    setTip(row, [
++      `${m.name} · ${m.calls} 次调用`,
++      thirdParty && m.source && `来源：${m.source}`,
++      `入 ${fmt(m.inputTokens)} · 缓 ${fmt(m.cachedTokens)} · 出 ${fmt(m.outputTokens)} tok`,
++      m.rates && `最近费率（美元 / 1M tok）：入 ${m.rates.input} · 缓 ${m.rates.cached} · 出 ${m.rates.output}`,
++      thirdParty && !m.rates && '未收录费率，仅统计用量',
++    ]);
++  }
++
++  function createPoolBlock(poolId, scope) {
+     const block = document.createElement('div');
+     block.className = 'pool-block';
+-
+     const head = document.createElement('div');
+     head.className = 'pool-head';
+     const title = document.createElement('div');
+     title.className = 'pool-title';
+     const dot = document.createElement('i');
+-    dot.className = `dot ${POOL_DOTS[p.id] || 'dot-blue'}`;
++    dot.className = `dot ${POOL_DOTS[poolId] || 'dot-blue'}`;
+     const name = document.createElement('span');
+-    name.textContent = p.name;
+-    name.title = p.hint || '';
+-
+     const status = document.createElement('button');
+     status.type = 'button';
+     status.className = 'pool-status';
+-    status.textContent = poolStatusLabel(p);
+-    const tips = [];
+-    if (p.startMs) {
+-      tips.push(`起算：${fullWhen(p.startMs)}`);
+-      if (p.nextMs) tips.push(`预计重置：${fullWhen(p.nextMs)}`);
+-      tips.push(`${p.sessionCount || 0} 会话 · ${p.totalCalls || 0} 次`);
+-    }
+-    if (companion && hasFiveHour) {
+-      const otherLabel = scope === 'fiveHour' ? '本周' : '5时';
+-      tips.push(`${otherLabel}：${poolStatusLabel(companion)} · ${poolCostText(companion)}`);
+-    }
+-    tips.push('点击校准时间');
+-    status.title = tips.join('\n');
+     status.addEventListener('click', () => openWindowSettings(scope));
+     title.append(dot, name, status);
+-
+     const right = document.createElement('div');
+     right.className = 'pool-right';
+     const cost = document.createElement('b');
+-    cost.textContent = poolCostText(p);
+     const reset = document.createElement('button');
+     reset.type = 'button';
+     reset.className = 'pool-reset-btn';
+     reset.textContent = '重置';
++    reset.addEventListener('click', () => resetPool(scope, poolId));
++    right.append(cost, reset);
++    head.append(title, right);
++    const list = document.createElement('div');
++    list.className = 'pool-models';
++    block.append(head, list);
++    block._refs = { name, status, cost, reset, list };
++    return block;
++  }
++
++  function updatePoolBlock(block, p, scope, companion) {
++    const { name, status, cost, reset, list } = block._refs;
++    name.textContent = p.name;
++    setTip(name, p.hint);
++    status.textContent = poolStatusLabel(p);
++    const otherLabel = scope === 'fiveHour' ? '本周' : '5时';
++    setTip(status, [
++      p.startMs && `起算：${fullWhen(p.startMs)}`,
++      p.nextMs && `预计重置：${fullWhen(p.nextMs)}`,
++      p.startMs && `${p.sessionCount || 0} 会话 · ${p.totalCalls || 0} 次`,
++      companion && `${otherLabel}：${poolStatusLabel(companion)} · ${poolCostText(companion)}`,
++      '点击校准时间',
++    ]);
++    cost.textContent = poolCostText(p);
+     const resetTip = scope === 'week'
+       ? `清零 ${p.name} 周限额与 5 时窗口，等待下次调用重新计时`
+       : `清零 ${p.name} 5 时窗口，等待下次调用重新计时`;
+-    reset.dataset.tip = resetTip;
++    setTip(reset, resetTip);
+     reset.ariaLabel = resetTip;
+-    reset.addEventListener('click', () => resetPool(scope, p.id));
+-    right.append(cost, reset);
+-    head.append(title, right);
+-    block.append(head);
++    const models = p.models || [];
++    list.hidden = !models.length;
++    syncRows(list, models, m => m.id, createRankRow, (row, m, i) => updateRankRow(row, m, i, false));
++  }
+ 
+-    if (p.models?.length) {
+-      const list = document.createElement('div');
+-      list.className = 'pool-models';
+-      list.append(...p.models.map((m, i) => buildRankRow(m, i, false)));
+-      block.append(list);
++  function createEmptyRow(message) {
++    const empty = document.createElement('div');
++    empty.className = 'rank-empty';
++    empty.textContent = message;
++    return empty;
++  }
++
++  function renderRankList(list, models, prefix, emptyMessage, thirdParty = false) {
++    if (!models.length) {
++      syncRows(list, [emptyMessage], () => `${prefix}:empty`, createEmptyRow, () => {});
++      return;
+     }
+-    return block;
++    syncRows(list, models, m => `${prefix}:model:${m.key ?? m.id}`, createRankRow,
++      (row, m, idx) => updateRankRow(row, m, idx, true, thirdParty));
+   }
+ 
++  function renderThirdParty() {
++    const data = thirdScope === 'session' ? sessionThirdParty : lastWindows?.thirdParty?.[thirdScope];
++    const models = data?.models || [];
++    for (const tab of $('thirdPartyTabs').children) {
++      const selected = tab.dataset.third === thirdScope;
++      tab.classList.toggle('active', selected);
++      tab.setAttribute('aria-selected', String(selected));
++      tab.tabIndex = selected ? 0 : -1;
++      if (selected) $('thirdPartyPanel').setAttribute('aria-labelledby', tab.id);
++    }
++    renderRankList($('thirdPartyModels'), models, thirdScope, '暂无第三方模型调用', true);
++    set('thirdPartyCost', usd(data?.total));
++    setTip($('thirdPartyCost'), data?.totalCalls > 0 ? [
++      `总计 ${fmt(data.tokens.total)} tok · ${data.totalCalls} 次调用`,
++      data.startMs && `起算：${fullWhen(data.startMs)}`,
++      thirdScope === 'session' && data.subagentCalls > 0 && `其中子代理 ${data.subagentCalls} 次调用`,
++      '金额按等价 API 费率估算，不代表实际账单。',
++    ] : '');
++    const note = models.length ? [
++      '金额为等价 API 费用，不代表实际账单。',
++      data.unpricedCalls > 0 && `${data.unpricedCalls} 次未计价，仍计入用量。`,
++    ].filter(Boolean).join('') : '';
++    set('thirdPartyNote', note);
++    $('thirdPartyNote').hidden = !note;
++  }
++
+   function updateTabTooltips(winData) {
+     for (const key of ['fiveHour', 'week', 'month']) {
+       const w = winData[key];
+@@ -315,10 +370,10 @@
+         const lines = [`起算：${fullWhen(w.startMs)}`];
+         if (w.nextMs) lines.push(`下次重置：${fullWhen(w.nextMs)}`);
+         lines.push(`${w.sessionCount || 0} 会话 · ${w.totalCalls || 0} 次`, usage);
+-        tab.title = lines.join('\n');
++        setTip(tab, lines);
+       } else {
+         const pools = w.pools || [];
+-        tab.title = [...pools.map(p => `${p.name}：${poolStatusLabel(p)} · ${poolCostText(p)}`), usage].join('\n');
++        setTip(tab, [...pools.map(p => `${p.name}：${poolStatusLabel(p)} · ${poolCostText(p)}`), usage]);
+       }
+     }
+   }
+@@ -345,40 +400,9 @@
+     const cur = winData[activeWindow];
+     if (!cur) return;
+     set('winTotalCost', poolCostText(cur));
+-    $('winTotalCost').title = `总计 ${fmt(cur.tokens?.total || 0)} tok · ${cur.totalCalls || 0} 次调用`;
++    setTip($('winTotalCost'), `总计 ${fmt(cur.tokens?.total || 0)} tok · ${cur.totalCalls || 0} 次调用`);
+ 
+-    if (activeWindow === 'month') {
+-      set('winMeta', shortStart(cur.startMs));
+-      const models = cur.models || [];
+-      const sig = JSON.stringify(['month', models.map(m => [m.id, m.calls, m.total, m.totalTokens])]);
+-      if (sig !== modelsSignature) {
+-        modelsSignature = sig;
+-        const list = $('winModels');
+-        if (!models.length) {
+-          const empty = document.createElement('div');
+-          empty.className = 'rank-empty';
+-          empty.textContent = '本月暂无已识别模型的调用';
+-          list.replaceChildren(empty);
+-        } else {
+-          list.replaceChildren(...models.map((m, i) => buildRankRow(m, i, true)));
+-        }
+-      }
+-    } else {
+-      const pools = cur.pools || [];
+-      const otherKey = activeWindow === 'fiveHour' ? 'week' : 'fiveHour';
+-      const otherPools = winData[otherKey]?.pools || [];
+-      set('winMeta', pools.length ? `${pools.filter(p => p.status === 'active').length}/${pools.length} 池` : '');
+-      const sig = JSON.stringify([
+-        activeWindow, hasFiveHour,
+-        pools.map(p => [p.id, poolStatusLabel(p), p.totalCalls, p.total, p.tokens?.total, p.models.map(m => [m.id, m.calls, m.total])]),
+-        otherPools.map(p => [p.id, poolStatusLabel(p), p.total]),
+-      ]);
+-      if (sig !== modelsSignature) {
+-        modelsSignature = sig;
+-        $('winModels').replaceChildren(...pools.map(p =>
+-          buildPoolBlock(p, activeWindow, otherPools.find(o => o.id === p.id), hasFiveHour)));
+-      }
+-    }
++    renderNativeWindow(cur, hasFiveHour);
+ 
+     const note = cur.unpricedCalls > 0
+       ? (cur.unrecognizedModels?.length
+@@ -389,7 +413,27 @@
+     $('winNote').hidden = !note;
+   }
+ 
++  function renderNativeWindow(cur, hasFiveHour) {
++    const list = $('winModels');
++    if (activeWindow === 'month') {
++      set('winMeta', shortStart(cur.startMs));
++      renderRankList(list, cur.models || [], activeWindow, '本月暂无已识别模型的调用');
++      return;
++    }
++    const pools = cur.pools || [];
++    const otherKey = activeWindow === 'fiveHour' ? 'week' : 'fiveHour';
++    const otherPools = hasFiveHour ? lastWindows[otherKey]?.pools || [] : [];
++    set('winMeta', pools.length ? `${pools.filter(p => p.status === 'active').length}/${pools.length} 池` : '');
++    syncRows(list, pools, p => `${activeWindow}:pool:${p.id}`, p => createPoolBlock(p.id, activeWindow),
++      (block, p) => updatePoolBlock(block, p, activeWindow, otherPools.find(o => o.id === p.id)));
++  }
++
+   function bindEvents() {
++    const thirdTabs = $('thirdPartyTabs');
++    bindTabKeys(thirdTabs);
++    for (const tab of thirdTabs.children) {
++      tab.addEventListener('click', () => { thirdScope = tab.dataset.third; renderThirdParty(); });
++    }
+     const dayEl = $('monthDay');
+     if (!dayEl.options.length) {
+       for (let d = 1; d <= 31; d++) dayEl.append(new Option(`${d} 日`, String(d)));
+@@ -432,7 +476,11 @@
+   }
+ 
+   bindEvents();
+-  return { render };
++  return { render(winData, thirdParty) {
++    sessionThirdParty = thirdParty;
++    render(winData);
++    renderThirdParty();
++  } };
+ }
+ 
+ window.__agyWindowsUI = createWindowsPanel;
