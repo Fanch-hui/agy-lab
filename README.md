@@ -1,6 +1,6 @@
 # AGY Lab
 
-面向 macOS Apple Silicon 与 Windows x64 的 Antigravity 本机实验副本，支持在原生模型选择器与 Orchestrator 中使用第三方模型。Lab 使用独立的应用标识（`com.local.agy-lab`）、数据目录、系统凭据存储和 `agy-lab://` 登录回调，不覆盖原版配置或会话。
+面向 macOS Apple Silicon 与 Windows x64 的 Antigravity 本机实验副本，支持在原生模型选择器与 Orchestrator 中使用第三方模型；Windows 构建可选支持 WSL 工作区（实验性）。Lab 使用独立的应用标识（`com.local.agy-lab`）、数据目录、系统凭据存储和 `agy-lab://` 登录回调，不覆盖原版配置或会话。
 
 > **非官方项目。** AGY Lab 与 Google、Antigravity 或 OpenAI 无官方关联。仓库仅发布项目源码和本地构建脚本，不分发 Antigravity 二进制、`app.asar`、图标、Electron 压缩包或构建好的应用。请使用自己合法取得的 Antigravity 安装包在本机生成副本。修改客户端或使用实验性订阅登录前，请自行确认适用的许可、服务条款和账号资格。
 
@@ -43,7 +43,7 @@ python3 scripts/build_app.py --source /Applications/Antigravity.app
 
 ### Windows x64
 
-需要 Windows x64 原版 Antigravity **2.35.1、2.35.2 或 2.36.0** 的安装目录。输出为免安装目录 `dist\Antigravity Lab\`：
+需要 Windows x64 原版 Antigravity **2.35.1、2.35.2 或 2.36.0** 的安装目录。输出为免安装目录 `dist\Antigravity Lab\`。2.36.0 的补丁已在官方文件上逐字节核对，但尚未在 Windows 上完成实机验收：
 
 ```powershell
 python scripts\build_app.py --source "$env:LOCALAPPDATA\Programs\antigravity"
@@ -59,7 +59,9 @@ python scripts\build_app.py --source C:\path\to\antigravity --installer C:\path\
 
 如果语言服务副本没有 PE 证书表，构建会跳过证书清理；如果存在补丁后失效的尾部证书块，构建会从副本移除它并清零 PE 校验和。Windows 副本使用独立数据目录、Windows 凭据隔离、`agy-lab://` 回调、系统托盘入口及 `com.local.agy-lab` AppUserModelID。
 
-#### WSL 工作区
+#### WSL 工作区（实验性）
+
+目前只支持 2.36.0。补丁后的 Linux 语言服务已在 Ubuntu 容器中确认可以启动并使用独立的存储位置，但安装到发行版、登录和第三方模型交接尚未在真实的 Windows + WSL 上验收。
 
 WSL 工作区需要在构建时加入同版本官方 Linux x64 语言服务；2.36.0 文件发布于 <https://storage.googleapis.com/antigravity-public/antigravity-hub/2.36.0-5596661662220288/unsigned/language_server-linux-x64>，构建会按登记的 SHA-256 核验并补丁后随 Lab 携带：
 
@@ -67,7 +69,7 @@ WSL 工作区需要在构建时加入同版本官方 Linux x64 语言服务；2.
 python scripts\build_app.py --source "$env:LOCALAPPDATA\Programs\antigravity" --wsl-server C:\path\to\language_server-linux-x64
 ```
 
-WSL 里的语言服务还需要能访问 Windows 上的 Lab 模型代理：在 `%UserProfile%\.wslconfig` 的 `[wsl2]` 下加入 `networkingMode=mirrored`（Windows 11 22H2+），执行 `wsl --shutdown` 后重新打开 Lab。未开启镜像网络时 WSL 会话仍可使用，但只走 Google 官方模型，Lab 会提示第三方模型不可用。Lab 在发行版内使用独立的 `~/.agy-lab-server` 和 `~/.agy-lab`；与 Windows 一样，全局规则和 Skills 会链接到发行版内原版应用的 `~/.gemini` 副本。SSH 远程工作区仍不支持。
+WSL 里的语言服务还需要能访问 Windows 上的 Lab 模型代理：在 `%UserProfile%\.wslconfig` 的 `[wsl2]` 下加入 `networkingMode=mirrored`（Windows 11 22H2+），执行 `wsl --shutdown` 后重新打开 Lab。Lab 启动 WSL 会话时会从发行版内探测代理（需要发行版里有 `bash`）；探测不通时 WSL 会话仍可使用，但只走 Google 官方模型，Lab 会提示第三方模型不可用。未带 `--wsl-server` 的构建不能连接 WSL。Lab 在发行版内使用独立的 `~/.agy-lab-server` 和 `~/.agy-lab`；与 Windows 一样，全局规则和 Skills 会链接到发行版内原版应用的 `~/.gemini` 副本。SSH 远程工作区仍不支持。
 
 ### 可选：中文界面
 
