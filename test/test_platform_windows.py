@@ -148,6 +148,18 @@ class WindowsSourceTest(unittest.TestCase):
 
 
 class UnpackedTreeHashTest(unittest.TestCase):
+    def test_orders_files_the_same_on_every_platform(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("Zeta/b.txt", "alpha/a.txt", "B.txt", "a.txt"):
+                (root / name).parent.mkdir(exist_ok=True)
+                (root / name).write_text(name)
+            expected = hashlib.sha256()
+            for name in ("a.txt", "alpha/a.txt", "B.txt", "Zeta/b.txt"):
+                expected.update(name.encode("utf-8") + b"\0")
+                expected.update(hashlib.sha256(name.encode("utf-8")).digest())
+            self.assertEqual(tree_sha256(root), expected.hexdigest())
+
     def test_hash_is_order_independent_and_sensitive_to_paths_and_contents(self):
         with tempfile.TemporaryDirectory() as temporary:
             first = Path(temporary) / "first"
