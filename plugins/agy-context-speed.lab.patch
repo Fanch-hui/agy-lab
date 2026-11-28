@@ -1,6 +1,6 @@
 diff -ruN agy-context-speed/sidecars/monitor/aggregate.mjs agy-context-speed/sidecars/monitor/aggregate.mjs
---- agy-context-speed/sidecars/monitor/aggregate.mjs	2026-11-27 09:49:17
-+++ agy-context-speed/sidecars/monitor/aggregate.mjs	2026-11-27 09:49:17
+--- agy-context-speed/sidecars/monitor/aggregate.mjs	2026-11-28 01:36:41
++++ agy-context-speed/sidecars/monitor/aggregate.mjs	2026-11-28 03:08:08
 @@ -7,7 +7,7 @@
  import { join } from 'node:path';
  import { readRecentCalls } from './calls.mjs';
@@ -84,8 +84,8 @@ diff -ruN agy-context-speed/sidecars/monitor/aggregate.mjs agy-context-speed/sid
    };
  }
 diff -ruN agy-context-speed/sidecars/monitor/app.js agy-context-speed/sidecars/monitor/app.js
---- agy-context-speed/sidecars/monitor/app.js	2026-11-27 09:49:17
-+++ agy-context-speed/sidecars/monitor/app.js	2026-11-27 09:49:54
+--- agy-context-speed/sidecars/monitor/app.js	2026-11-28 01:36:41
++++ agy-context-speed/sidecars/monitor/app.js	2026-11-28 03:17:40
 @@ -1,9 +1,10 @@
  (() => {
  const $ = (id) => document.getElementById(id);
@@ -224,7 +224,7 @@ diff -ruN agy-context-speed/sidecars/monitor/app.js agy-context-speed/sidecars/m
      $('chartArea').setAttribute('d', '');
      $('chartLine').setAttribute('d', '');
      avgLine.setAttribute('visibility', 'hidden');
-@@ -323,276 +326,125 @@
+@@ -323,276 +326,153 @@
      const p = nearest.pt;
      const parts = [`${p.tps.toFixed(1)} t/s`, `${fmt(p.outputTokens)} tok`];
      if (p.ttftSeconds != null) parts.push(`首字 ${p.ttftSeconds.toFixed(1)}s`);
@@ -321,7 +321,17 @@ diff -ruN agy-context-speed/sidecars/monitor/app.js agy-context-speed/sidecars/m
 -    ctx?.used != null ? `上下文 ${fmt(ctx.used)} / ${fmt(ctx.ceiling)}` : '',
 -    `入 ${fmt(m.inputTokens)} · 缓 ${fmt(m.cachedTokens)} · 出 ${fmt(m.outputTokens)}${rateLine}`,
 -  ].filter(Boolean).join('\n');
--
++function subagentRows(sub) {
++  if (!sub || (sub.count <= 0 && sub.modelCalls <= 0)) return [];
++  const rows = [{ key: 'subagents', name: `子代理 (${sub.count} 个)`, total: sub.cost, calls: sub.modelCalls, tip: [
++    `子代理 ${sub.count} 个 · 共 ${sub.modelCalls} 次调用`,
++    `入 ${fmt(sub.input)} · 缓 ${fmt(sub.cached)} · 出 ${fmt(sub.output)}`,
++  ] }];
++  rows.push(...sub.models.map(m => modelBreakdown(m, 'subagent')));
++  if (sub.unpricedCalls > 0) rows.push({ key: 'subagent-unpriced', name: '未计价调用', calls: sub.unpricedCalls, sub: true });
++  return rows;
++}
+ 
 -  const lblNodes = [document.createTextNode(m.name)];
 -  if (roleLabel) {
 -    const tag = document.createElement('span');
@@ -358,26 +368,36 @@ diff -ruN agy-context-speed/sidecars/monitor/app.js agy-context-speed/sidecars/m
 +  ];
 +  const primary = k.primaryModels || k.models;
 +  const unpriced = Math.max(0, k.primaryCalls - primary.reduce((sum, m) => sum + m.calls, 0));
-+  const hasSub = sub.count > 0 || sub.modelCalls > 0;
-+  const short = !hasSub && primary.length <= 1 && unpriced === 0;
++  const subRows = subagentRows(sub);
++  const short = !subRows.length && primary.length <= 1 && unpriced === 0;
 +  const rows = [{ key: 'total', name: short ? primary[0]?.name || '原生会话' : '原生会话', total: k.total, calls: k.totalCalls, tip: totalTip }];
 +  if (short) return rows;
 +  rows.push(...primary.map(m => modelBreakdown(m, 'primary')));
 +  if (unpriced > 0) rows.push({ key: 'primary-unpriced', name: '未计价调用', calls: unpriced, sub: true });
-+  if (!hasSub) return rows;
-+  rows.push({ key: 'subagents', name: `子代理 (${sub.count} 个)`, total: sub.cost, calls: sub.modelCalls, tip: [
-+    `子代理 ${sub.count} 个 · 共 ${sub.modelCalls} 次调用`,
-+    `入 ${fmt(sub.input)} · 缓 ${fmt(sub.cached)} · 出 ${fmt(sub.output)}`,
-+  ] });
-+  rows.push(...sub.models.map(m => modelBreakdown(m, 'subagent')));
-+  if (sub.unpricedCalls > 0) rows.push({ key: 'subagent-unpriced', name: '未计价调用', calls: sub.unpricedCalls, sub: true });
++  rows.push(...subRows);
 +  return rows;
  }
  
 -function renderDetailsTail(p, t, k, modelViews = []) {
 -  set('detailTtft', p.ttftSeconds != null ? secs(p.ttftSeconds) : (p.ttftMedianSeconds != null ? `中位 ${secs(p.ttftMedianSeconds)}` : '—'));
 -  $('rowTtft').title = p.ttftMedianSeconds != null ? `近 20 次首字中位：${secs(p.ttftMedianSeconds)}` : '';
--
++function modelRows(view, sub) {
++  const cost = view.cost;
++  const tokens = cost.tokens;
++  const priced = cost.mode !== 'unavailable';
++  return [{ key: 'model:' + view.key, name: view.name, total: priced ? cost.total : null, calls: view.calls, tip: [
++    `${view.name} · ${view.calls} 次调用`,
++    view.source && `来源：${view.source}`,
++    `入 ${fmt(tokens.input)} · 缓 ${fmt(tokens.cached)} · 出 ${fmt(tokens.output)}`,
++    priced && `输入 ${fmt(tokens.input)} (${usd(cost.input)})`,
++    priced && `缓存 ${fmt(tokens.cached)} (${usd(cost.cached)})`,
++    priced && `输出 ${fmt(tokens.output)} (${usd(cost.output)})`,
++    priced && cost.last != null && `本次调用：${usd(cost.last)}`,
++    priced && cost.cacheSaved > 0 && `缓存节省：${usd(cost.cacheSaved)}`,
++    view.isExternal && '金额为等价 API 费用，不代表实际账单。',
++  ] }, ...subagentRows(sub)];
++}
+ 
 -  const primaryModels = k.primaryModels || k.models || [];
 -  const sub = t.subagents || { count: 0, modelCalls: 0, models: [] };
 -  const subModels = sub.models || [];
@@ -398,8 +418,10 @@ diff -ruN agy-context-speed/sidecars/monitor/app.js agy-context-speed/sidecars/m
 -    subModels.map(m => [m.id, m.calls, m.total]),
 -    k.unrecognizedModels,
 -  ]);
-+function renderNativeCost(k, sub) {
-+  const rows = breakdownRows(k, sub);
++function renderCost(view) {
++  const subagents = lastSnapshot?.totals.subagents;
++  const modelView = view?.key ? view : null;
++  const rows = !lastSnapshot || !view ? [] : modelView ? modelRows(modelView, subagents) : breakdownRows(lastSnapshot.cost, subagents);
 +  const sig = JSON.stringify(rows);
    if (sig !== breakdownSignature) {
      breakdownSignature = sig;
@@ -448,17 +470,22 @@ diff -ruN agy-context-speed/sidecars/monitor/app.js agy-context-speed/sidecars/m
 -  let costNote = '';
 -  if (k.mode === 'unavailable' && t.modelCalls > 0) {
 -    costNote = k.unrecognizedModels?.length
-+  let note = '';
-+  if (k?.totalCalls && k?.mode === 'unavailable') {
-+    note = k.unrecognizedModels?.length
-       ? `未收录模型费率：${k.unrecognizedModels.join('、')}`
-       : '未读到调用记录里的模型信息，无法计算价格。';
+-      ? `未收录模型费率：${k.unrecognizedModels.join('、')}`
+-      : '未读到调用记录里的模型信息，无法计算价格。';
 -  } else if (k.mode === 'partial') {
 -    costNote = k.unrecognizedModels?.length
-+  } else if (k?.mode === 'partial') {
-+    note = k.unrecognizedModels?.length
-       ? `未收录部分模型费率（${k.unrecognizedModels.join('、')}），金额仅计入已识别的 ${k.pricedCalls}/${k.totalCalls} 次。`
-       : `部分调用未能匹配模型记录，金额仅计入已识别的 ${k.pricedCalls}/${k.totalCalls} 次。`;
+-      ? `未收录部分模型费率（${k.unrecognizedModels.join('、')}），金额仅计入已识别的 ${k.pricedCalls}/${k.totalCalls} 次。`
+-      : `部分调用未能匹配模型记录，金额仅计入已识别的 ${k.pricedCalls}/${k.totalCalls} 次。`;
++  const cost = modelView ? modelView.cost : lastSnapshot?.cost;
++  let note = '';
++  if (cost?.totalCalls && cost?.mode === 'unavailable') {
++    note = cost.unrecognizedModels?.length
++      ? `未收录模型费率：${cost.unrecognizedModels.join('、')}`
++      : modelView ? `未收录 ${modelView.name} 的费率，仅统计调用次数。` : '未读到调用记录里的模型信息，无法计算价格。';
++  } else if (cost?.mode === 'partial') {
++    note = cost.unrecognizedModels?.length
++      ? `未收录部分模型费率（${cost.unrecognizedModels.join('、')}），金额仅计入已识别的 ${cost.pricedCalls}/${cost.totalCalls} 次。`
++      : `部分调用未能匹配模型记录，金额仅计入已识别的 ${cost.pricedCalls}/${cost.totalCalls} 次。`;
    }
 -  set('costNote', costNote);
 -  $('costNote').hidden = !costNote;
@@ -473,23 +500,8 @@ diff -ruN agy-context-speed/sidecars/monitor/app.js agy-context-speed/sidecars/m
 -    btn.classList.toggle('active', active);
 -    btn.setAttribute('aria-selected', String(active));
 -  }
-+function renderModelMetrics() {
-+  const view = modelSwitcher.render(lastSnapshot);
-+  $('modelMetrics').hidden = !view;
-+  if (!view) return;
-+  const { context: c, performance: p, totals: t } = view;
-+  const nextKey = JSON.stringify([lastSnapshot.session.id, view.key]);
-+  if (metricKey !== nextKey) { clearChartHover(); metricKey = nextKey; }
-+  const scope = view.key ? '本模型' : '整场会话';
-+  renderSpeedGauge(p);
-+  renderContextRingAndDetails(c);
-+  renderOutput(p, t, scope);
-+  renderCacheHit(c, t, scope);
-+  renderSpeedChart(p);
-+  set('detailTtft', p.ttftSeconds != null ? secs(p.ttftSeconds) : (p.ttftMedianSeconds != null ? `中位 ${secs(p.ttftMedianSeconds)}` : '—'));
-+  setTip($('rowTtft'), p.ttftMedianSeconds != null ? `近 20 次首字中位：${secs(p.ttftMedianSeconds)}` : '');
- }
- 
+-}
+-
 -function makeModelTab(id, label, tip, isActiveModel = false) {
 -  const btn = document.createElement('button');
 -  btn.type = 'button';
@@ -517,8 +529,13 @@ diff -ruN agy-context-speed/sidecars/monitor/app.js agy-context-speed/sidecars/m
 -  if (!models || models.length <= 1) {
 -    bar.hidden = true;
 -    modelBarSignature = '';
--    return;
--  }
++function renderModelMetrics() {
++  const view = modelSwitcher.render(lastSnapshot);
++  $('modelMetrics').hidden = !view;
++  if (!view) {
++    renderCost(null);
+     return;
+   }
 -  bar.hidden = false;
 -  const sig = JSON.stringify(models.map(m => [
 -    m.id, m.role, m.isActive, m.calls, m.performance?.tps, m.context?.used, m.cost?.total,
@@ -542,8 +559,20 @@ diff -ruN agy-context-speed/sidecars/monitor/app.js agy-context-speed/sidecars/m
 -    $('modelTabs').replaceChildren(...tabs);
 -  }
 -  syncModelTabSelection();
--}
--
++  const { context: c, performance: p, totals: t } = view;
++  const nextKey = JSON.stringify([lastSnapshot.session.id, view.key]);
++  if (metricKey !== nextKey) { clearChartHover(); metricKey = nextKey; }
++  const scope = view.key ? '本模型' : '整场会话';
++  renderSpeedGauge(p);
++  renderContextRingAndDetails(c);
++  renderOutput(p, t, scope);
++  renderCacheHit(c, t, scope);
++  renderSpeedChart(p);
++  set('detailTtft', p.ttftSeconds != null ? secs(p.ttftSeconds) : (p.ttftMedianSeconds != null ? `中位 ${secs(p.ttftMedianSeconds)}` : '—'));
++  setTip($('rowTtft'), p.ttftMedianSeconds != null ? `近 20 次首字中位：${secs(p.ttftMedianSeconds)}` : '');
++  renderCost(view);
+ }
+ 
 -function renderActiveView(s) {
 -  const view = selectedModelId ? s.models?.find(m => m.id === selectedModelId) : null;
 -  const target = view || s;
@@ -587,11 +616,10 @@ diff -ruN agy-context-speed/sidecars/monitor/app.js agy-context-speed/sidecars/m
 -  renderActiveView(s);
 +  set('freshness', lastSnapshot ? `更新 ${when(lastSnapshot.context.updatedAt)}` : '');
 +  renderModelMetrics();
-+  renderNativeCost(lastSnapshot?.cost, lastSnapshot?.totals.subagents);
  }
  
  async function saveWindows(patch) {
-@@ -606,6 +458,8 @@
+@@ -606,6 +486,8 @@
    } catch (e) { set('error', `保存时间设置失败：${String(e?.message || e).slice(0, 80)}`); }
  }
  
@@ -600,7 +628,7 @@ diff -ruN agy-context-speed/sidecars/monitor/app.js agy-context-speed/sidecars/m
  const windowsPanel = window.__agyWindowsUI({
    $, set, fmt, usd, shortStart, fullWhen, toDatetimeInput, fmtSpan, saveWindows,
  });
-@@ -622,17 +476,20 @@
+@@ -622,17 +504,20 @@
      const result = await r.json();
      updateSessions(result.sessions || [], result.auto, result.snapshot?.session);
      render(result);
@@ -624,8 +652,8 @@ diff -ruN agy-context-speed/sidecars/monitor/app.js agy-context-speed/sidecars/m
      const r = await fetch('/api/context-limit/next', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
      if (!r.ok) throw new Error(`HTTP ${r.status}`);
 diff -ruN agy-context-speed/sidecars/monitor/index.html agy-context-speed/sidecars/monitor/index.html
---- agy-context-speed/sidecars/monitor/index.html	2026-11-27 09:49:17
-+++ agy-context-speed/sidecars/monitor/index.html	2026-11-27 09:50:44
+--- agy-context-speed/sidecars/monitor/index.html	2026-11-28 01:36:41
++++ agy-context-speed/sidecars/monitor/index.html	2026-11-28 03:13:22
 @@ -7,13 +7,14 @@
    <title>Context & Speed</title>
    <link rel="stylesheet" href="/styles.css">
@@ -814,7 +842,7 @@ diff -ruN agy-context-speed/sidecars/monitor/index.html agy-context-speed/sideca
 -      <span class="kv-label">首字延迟</span>
 -      <span class="kv-val" id="detailTtft">—</span>
 -    </div>
-+  <section class="details native-cost" id="nativeCostSection" aria-label="原生会话费用" hidden>
++  <section class="details native-cost" id="nativeCostSection" aria-label="会话费用" hidden>
      <div id="sessionBreakdown" class="breakdown"></div>
      <div class="note" id="costNote" hidden></div>
    </section>
@@ -853,8 +881,8 @@ diff -ruN agy-context-speed/sidecars/monitor/index.html agy-context-speed/sideca
  </body>
  </html>
 diff -ruN agy-context-speed/sidecars/monitor/main.mjs agy-context-speed/sidecars/monitor/main.mjs
---- agy-context-speed/sidecars/monitor/main.mjs	2026-11-27 09:49:17
-+++ agy-context-speed/sidecars/monitor/main.mjs	2026-11-27 09:49:17
+--- agy-context-speed/sidecars/monitor/main.mjs	2026-11-28 01:36:41
++++ agy-context-speed/sidecars/monitor/main.mjs	2026-11-28 03:08:08
 @@ -7,11 +7,13 @@
  const app = new SidecarApp();
  const html = () => readFileSync(new URL('./index.html', import.meta.url), 'utf8');
@@ -870,8 +898,8 @@ diff -ruN agy-context-speed/sidecars/monitor/main.mjs agy-context-speed/sidecars
  app.page('/styles.css', () => new Response(css(), { contentType: 'text/css; charset=utf-8' }));
  app.api('/api/telemetry', (data) => {
 diff -ruN agy-context-speed/sidecars/monitor/metrics.mjs agy-context-speed/sidecars/monitor/metrics.mjs
---- agy-context-speed/sidecars/monitor/metrics.mjs	2026-11-27 09:49:17
-+++ agy-context-speed/sidecars/monitor/metrics.mjs	2026-11-27 09:50:16
+--- agy-context-speed/sidecars/monitor/metrics.mjs	2026-11-28 01:36:41
++++ agy-context-speed/sidecars/monitor/metrics.mjs	2026-11-28 03:13:22
 @@ -2,12 +2,14 @@
  import { openSync, closeSync, readSync, readdirSync, statSync, existsSync, readFileSync } from 'node:fs';
  import { homedir } from 'node:os';
@@ -937,7 +965,7 @@ diff -ruN agy-context-speed/sidecars/monitor/metrics.mjs agy-context-speed/sidec
      });
    }
    if (!last && turns.length) {
-@@ -284,54 +291,91 @@
+@@ -284,54 +291,93 @@
    const stamp = `${log.file}:${log.size}:${log.modified}:${dbStamp(rootDir, uuid)}`;
    const hit = subCache.get(`${rootDir}:${uuid}`);
    if (hit?.stamp === stamp) return hit.data;
@@ -985,14 +1013,16 @@ diff -ruN agy-context-speed/sidecars/monitor/metrics.mjs agy-context-speed/sidec
 +    if (!name) continue;
 +    const key = billing ? `ext:${modelId || externalModel || unrecognizedLabel}:${source}`
 +      : modelId ? `native:${modelId}` : `other:${unrecognizedLabel}`;
-+    if (!groups.has(key)) groups.set(key, { key, name, source, isExternal: !!billing, turns: [] });
++    if (!groups.has(key)) groups.set(key, { key, name, source, isExternal: !!billing, turns: [], priced: [] });
 +    groups.get(key).turns.push(turns[i]);
++    groups.get(key).priced.push(entry);
 +    turnModels[i] = { id: key };
 +    activeModelKey = key;
 +  }
 +  const roles = detectModelRoles(steps, turns, turnModels);
-+  const models = Array.from(groups.values(), ({ turns: group, ...model }) => ({
++  const models = Array.from(groups.values(), ({ turns: group, priced: entries, ...model }) => ({
 +    ...model, role: roles.get(model.key) || null, calls: group.length, active: model.key === activeModelKey,
++    cost: aggregatePriced(entries),
 +    ...buildTelemetryView(steps, group, options),
 +  })).sort((a, b) => roleRank(a.role) - roleRank(b.role));
 +  return { models, activeModelKey };
@@ -1065,7 +1095,7 @@ diff -ruN agy-context-speed/sidecars/monitor/metrics.mjs agy-context-speed/sidec
        })),
        lastStepIndex: lastIdx,
      },
-@@ -342,43 +386,46 @@
+@@ -342,43 +388,46 @@
    return analyzeStepsWithPriced(steps, options).snapshot;
  }
  
@@ -1144,8 +1174,8 @@ diff -ruN agy-context-speed/sidecars/monitor/metrics.mjs agy-context-speed/sidec
      session: {
        id: session.id, title: session.title || '', workspace: session.workspace, source: session.source,
 diff -ruN agy-context-speed/sidecars/monitor/models.mjs agy-context-speed/sidecars/monitor/models.mjs
---- agy-context-speed/sidecars/monitor/models.mjs	2026-11-27 09:49:17
-+++ agy-context-speed/sidecars/monitor/models.mjs	2026-11-27 09:50:31
+--- agy-context-speed/sidecars/monitor/models.mjs	2026-11-28 01:36:41
++++ agy-context-speed/sidecars/monitor/models.mjs	2026-11-28 03:08:08
 @@ -5,6 +5,8 @@
  import { aggregatePriced } from './pricing.mjs';
  
@@ -1200,7 +1230,7 @@ diff -ruN agy-context-speed/sidecars/monitor/models.mjs agy-context-speed/sideca
  export function buildModelViews(steps, turns, priced, {
 diff -ruN agy-context-speed/sidecars/monitor/panel-controls.js agy-context-speed/sidecars/monitor/panel-controls.js
 --- agy-context-speed/sidecars/monitor/panel-controls.js	1969-12-31 19:00:00
-+++ agy-context-speed/sidecars/monitor/panel-controls.js	2026-11-27 09:50:44
++++ agy-context-speed/sidecars/monitor/panel-controls.js	2026-11-28 03:08:08
 @@ -0,0 +1,197 @@
 +(() => {
 +const $ = (id) => document.getElementById(id);
@@ -1400,8 +1430,8 @@ diff -ruN agy-context-speed/sidecars/monitor/panel-controls.js agy-context-speed
 +window.__agyPanelControls = { createTooltip, createModelSwitcher, bindTabKeys, setTip, syncRows };
 +})();
 diff -ruN agy-context-speed/sidecars/monitor/pricing.mjs agy-context-speed/sidecars/monitor/pricing.mjs
---- agy-context-speed/sidecars/monitor/pricing.mjs	2026-11-27 09:49:17
-+++ agy-context-speed/sidecars/monitor/pricing.mjs	2026-11-27 09:49:17
+--- agy-context-speed/sidecars/monitor/pricing.mjs	2026-11-28 01:36:41
++++ agy-context-speed/sidecars/monitor/pricing.mjs	2026-11-28 03:08:08
 @@ -6,6 +6,48 @@
  const ARGON_INTRO_END = Date.UTC(2026, 11, 1); // 2026-12-01 00:00:00 UTC
  const FLASH3_INTRO_END = Date.UTC(2027, 0, 1); // 2027-01-01 00:00:00 UTC
@@ -1619,8 +1649,8 @@ diff -ruN agy-context-speed/sidecars/monitor/pricing.mjs agy-context-speed/sidec
    return CLAUDE_POOL.has(modelId) ? 'claude' : 'gemini';
  }
 diff -ruN agy-context-speed/sidecars/monitor/settings.mjs agy-context-speed/sidecars/monitor/settings.mjs
---- agy-context-speed/sidecars/monitor/settings.mjs	2026-11-27 09:49:17
-+++ agy-context-speed/sidecars/monitor/settings.mjs	2026-11-27 09:49:17
+--- agy-context-speed/sidecars/monitor/settings.mjs	2026-11-28 01:36:41
++++ agy-context-speed/sidecars/monitor/settings.mjs	2026-11-28 03:08:08
 @@ -3,11 +3,10 @@
   * 面板页面每次启动端口都会变，localStorage 无法跨重启保留，所以由后端持久化。
   */
@@ -1636,9 +1666,9 @@ diff -ruN agy-context-speed/sidecars/monitor/settings.mjs agy-context-speed/side
  export const PLANS = Object.freeze(['pro', 'ultra', 'free']);
  const POOL_IDS = ['gemini', 'claude'];
 diff -ruN agy-context-speed/sidecars/monitor/styles.css agy-context-speed/sidecars/monitor/styles.css
---- agy-context-speed/sidecars/monitor/styles.css	2026-11-27 09:49:17
-+++ agy-context-speed/sidecars/monitor/styles.css	2026-11-27 09:51:13
-@@ -144,38 +144,46 @@
+--- agy-context-speed/sidecars/monitor/styles.css	2026-11-28 01:36:41
++++ agy-context-speed/sidecars/monitor/styles.css	2026-11-28 03:08:54
+@@ -144,38 +144,56 @@
    text-align: center;
  }
  
@@ -1664,8 +1694,11 @@ diff -ruN agy-context-speed/sidecars/monitor/styles.css agy-context-speed/sideca
  
 -.seg-models::-webkit-scrollbar {
 -  display: none;
--}
--
++.model-tabs {
++  flex: 1;
++  min-width: 0;
+ }
+ 
 -.seg-models .seg-tab {
 +.model-tab {
    display: inline-flex;
@@ -1678,13 +1711,18 @@ diff -ruN agy-context-speed/sidecars/monitor/styles.css agy-context-speed/sideca
 -.live-dot {
 -  display: inline-block;
 -  flex: none;
++.model-tabs .model-tab {
++  flex: 0 1 auto;
++  min-width: 0;
++}
++
 +.model-tab-name,
 +.rank-name > span {
 +  overflow: hidden;
 +  text-overflow: ellipsis;
 +}
 +
-+.model-tab-name { max-width: 11em; }
++.model-tab-name { min-width: 3em; max-width: 11em; }
 +.model-tab-context { font-variant-numeric: tabular-nums; }
 +
 +.model-active-dot {
@@ -1700,7 +1738,7 @@ diff -ruN agy-context-speed/sidecars/monitor/styles.css agy-context-speed/sideca
  /* 顶部双仪表（等宽两列、严格等高对称） */
  .gauges {
    display: grid;
-@@ -202,7 +210,7 @@
+@@ -202,7 +220,7 @@
    cursor: pointer;
  }
  
@@ -1709,7 +1747,7 @@ diff -ruN agy-context-speed/sidecars/monitor/styles.css agy-context-speed/sideca
    cursor: default;
  }
  
-@@ -373,11 +381,11 @@
+@@ -373,11 +391,11 @@
    cursor: pointer;
  }
  
@@ -1723,7 +1761,7 @@ diff -ruN agy-context-speed/sidecars/monitor/styles.css agy-context-speed/sideca
    text-decoration: none;
    cursor: default;
  }
-@@ -431,6 +439,8 @@
+@@ -431,6 +449,8 @@
  .dot-purple { background: var(--cs-purple); }
  .dot-teal { background: var(--cs-teal); }
  
@@ -1732,7 +1770,7 @@ diff -ruN agy-context-speed/sidecars/monitor/styles.css agy-context-speed/sideca
  .breakdown {
    display: flex;
    flex-direction: column;
-@@ -464,22 +474,10 @@
+@@ -464,22 +484,10 @@
    color: var(--cs-muted);
  }
  
@@ -1757,7 +1795,7 @@ diff -ruN agy-context-speed/sidecars/monitor/styles.css agy-context-speed/sideca
  /* 全会话汇总 */
  .summary {
    display: flex;
-@@ -588,52 +586,25 @@
+@@ -588,52 +596,25 @@
    color: var(--cs-red);
  }
  
@@ -1820,7 +1858,7 @@ diff -ruN agy-context-speed/sidecars/monitor/styles.css agy-context-speed/sideca
  /* 额度池与周期校准设置抽屉 */
  .win-settings {
    display: flex;
-@@ -824,11 +795,14 @@
+@@ -824,11 +805,14 @@
    font-variant-numeric: tabular-nums;
  }
  
@@ -1836,7 +1874,7 @@ diff -ruN agy-context-speed/sidecars/monitor/styles.css agy-context-speed/sideca
  .rank-cost {
    min-width: 44px;
    text-align: right;
-@@ -846,6 +820,12 @@
+@@ -846,6 +830,12 @@
    color: var(--cs-muted);
    font-size: 11.5px;
    text-align: center;
@@ -1850,8 +1888,8 @@ diff -ruN agy-context-speed/sidecars/monitor/styles.css agy-context-speed/sideca
  
  .note {
 diff -ruN agy-context-speed/sidecars/monitor/windows-ui.js agy-context-speed/sidecars/monitor/windows-ui.js
---- agy-context-speed/sidecars/monitor/windows-ui.js	2026-11-27 09:49:17
-+++ agy-context-speed/sidecars/monitor/windows-ui.js	2026-11-27 09:49:17
+--- agy-context-speed/sidecars/monitor/windows-ui.js	2026-11-28 01:36:41
++++ agy-context-speed/sidecars/monitor/windows-ui.js	2026-11-28 03:08:08
 @@ -3,6 +3,7 @@
   * 采用经典脚本挂载（而非 ES Module），兼容 Sidecar WebView 对 module 脚本的限制。
   */
