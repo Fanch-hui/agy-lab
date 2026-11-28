@@ -3,12 +3,13 @@
 // Exports the model list the running language server shows to the UI, to check whether
 // injected catalogue entries survive the server's own filtering. Only model names, enums and
 // sort groups are written; the CSRF token stays in the main process.
-const fs = require('node:fs');
 const https = require('node:https');
 const path = require('node:path');
 const { app } = require('electron');
+const { writeFileAtomic } = require('./atomic-file.cjs');
 
 const STATUS_PATH = '/exa.language_server_pb.LanguageServerService/GetUserStatus';
+const MAX_DIAGNOSTICS_BYTES = 16 * 1024 * 1024;
 
 function userStatus() {
   const { getActiveLsPort, getActiveLsCsrfToken } = require('../authBootstrap');
@@ -25,7 +26,16 @@ function userStatus() {
       },
     }, response => {
       const chunks = [];
-      response.on('data', chunk => chunks.push(chunk));
+      let size = 0;
+      response.on('data', chunk => {
+        size += chunk.length;
+        if (size > MAX_DIAGNOSTICS_BYTES) {
+          response.destroy();
+          reject(new Error('GetUserStatus 响应过大。'));
+          return;
+        }
+        chunks.push(chunk);
+      });
       response.on('end', () => {
         if (response.statusCode !== 200) {
           reject(new Error(`GetUserStatus 返回 HTTP ${response.statusCode}`));
@@ -62,7 +72,7 @@ async function exportModelDiagnostics() {
     otherKeys: Object.keys(data),
   };
   const file = path.join(app.getPath('userData'), 'model-diagnostics.json');
-  fs.writeFileSync(file, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
+  writeFileAtomic(file, JSON.stringify(report, null, 2) + '\n');
   return file;
 }
 

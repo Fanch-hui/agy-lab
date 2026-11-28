@@ -108,6 +108,20 @@ class WindowsArchiveTest(unittest.TestCase):
             extract_zip_safely(self.archive, self.destination)
         self.assertFalse((self.root / "evil.txt").exists())
 
+    def test_rejects_backslash_traversal_and_symlinks(self):
+        with zipfile.ZipFile(self.archive, "w") as archive:
+            archive.writestr("..\\evil.txt", b"backslash traversal")
+        with self.assertRaisesRegex(RuntimeError, "unsafe path"):
+            extract_zip_safely(self.archive, self.destination)
+
+        symlink_archive = self.root / "symlink.zip"
+        with zipfile.ZipFile(symlink_archive, "w") as archive:
+            info = zipfile.ZipInfo("link")
+            info.external_attr = 0o120777 << 16
+            archive.writestr(info, "/etc/passwd")
+        with self.assertRaisesRegex(RuntimeError, "symlink"):
+            extract_zip_safely(symlink_archive, self.destination)
+
 
 class WindowsSourceTest(unittest.TestCase):
     unpacked_file = "app.asar.unpacked/nested/file.bin"

@@ -132,7 +132,7 @@ test('stops the upstream request when the client disconnects', async context => 
 test('never forwards to a host named in the request line', async context => {
   const { proxy, received } = await fixture(context, (_request, response) => response.end('{}'));
   const port = new URL(proxy.url).port;
-  for (const target of ['//example.invalid/path', 'http://example.invalid/path']) {
+  for (const target of ['//example.invalid/path', '/\\example.invalid/path', 'http://example.invalid/path']) {
     const status = await new Promise((resolve, reject) => {
       const request = http.request({ host: '127.0.0.1', port, method: 'GET', path: target }, response => {
         response.resume();
@@ -144,4 +144,39 @@ test('never forwards to a host named in the request line', async context => {
     assert.equal(status, 400);
   }
   assert.equal(received.length, 0);
+});
+
+test('caps oversized catalogue responses and catches external handler failures', async context => {
+  const proxyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cloud-proxy-oversize-'));
+  const bigChunk = Buffer.alloc(1024 * 1024, 0x20);
+  const upstream = http.createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    for (let i = 0; i < 65; i += 1) response.write(bigChunk);
+    response.end('{}');
+  });
+  const origin = await listen(upstream);
+  const proxy = await startCloudProxy({
+    upstream: origin,
+    inventoryFile: path.join(proxyDir, 'inventory.json'),
+    external: {
+      matches: model => model === 'boom',
+      async handle() { throw new Error('boom'); },
+      rewriteCatalogue: data => data,
+    },
+  });
+  context.after(async () => {
+    await proxy.close();
+    upstream.closeAllConnections();
+    await new Promise(resolve => upstream.close(resolve));
+    fs.rmSync(proxyDir, { recursive: true, force: true });
+  });
+
+  const oversized = await fetch(proxy.url + '/v1internal:fetchAvailableModels', { method: 'POST', body: '{}' });
+  assert.equal(oversized.status, 502);
+  assert.match((await oversized.json()).error.message, /proxy limit/);
+
+  const boom = await fetch(proxy.url + '/v1internal:streamGenerateContent', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"model":"boom"}',
+  });
+  assert.equal(boom.status, 500);
 });

@@ -139,3 +139,35 @@ test('does not execute a tool call from a token-limited incomplete response', as
   assert.deepEqual(chunks[0].candidates[0].content.parts, []);
   assert.equal(chunks[0].candidates[0].finishReason, 'MAX_TOKENS');
 });
+
+test('rejects malformed SSE JSON, invalid tool arguments and corrupt reasoning signatures cleanly', async context => {
+  const { requestFor } = require('../lab/responses.cjs');
+  assert.throws(() => requestFor({ model: 'gpt-6-luna' }, {
+    contents: [{ role: 'model', parts: [{
+      functionCall: { id: 'call_1', name: 'read_file', args: {} },
+      thoughtSignature: Buffer.from('agy-openai-reasoning-v1:{bad-json').toString('base64'),
+    }] }],
+  }), /invalid encrypted reasoning/);
+
+  let mode = 0;
+  const baseUrl = await serverFor((request, response) => {
+    request.resume();
+    mode += 1;
+    if (mode === 1) {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end('data: {not-json\r\n\r\n');
+    } else {
+      sendEvents(response, [{
+        type: 'response.completed',
+        response: { status: 'completed', output: [{ type: 'function_call', call_id: 'c1', name: 'read_file', arguments: '{bad' }] },
+      }]);
+    }
+  }, context);
+
+  await assert.rejects(generateResponses({
+    connection: { baseUrl, model: 'gpt-6-luna' }, request: { contents: [] }, onChunk() {},
+  }), /invalid stream data/);
+  await assert.rejects(generateResponses({
+    connection: { baseUrl, model: 'gpt-6-luna' }, request: { contents: [] }, onChunk() {},
+  }), /invalid arguments for tool read_file/);
+});

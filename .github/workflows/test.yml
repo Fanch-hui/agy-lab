@@ -16,5 +16,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - run: npm test
       - run: python3 -m py_compile scripts/*.py
+      - run: python3 -m unittest discover -s test -v

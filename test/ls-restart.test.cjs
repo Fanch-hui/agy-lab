@@ -114,3 +114,20 @@ test('Windows termination uses taskkill and falls back to SIGTERM on failure', a
   await restarter.beforeRestart();
   assert.equal(await second, 'second');
 });
+
+test('ignores SIGKILL errors if process already exited before timer fired', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const proc = processFixture();
+  proc.kill = signal => {
+    proc.signals.push(signal);
+    if (signal === 'SIGKILL') throw new Error('ESRCH');
+    return true;
+  };
+  const restarter = createRestarter(() => proc);
+  const pending = restarter.restartWith(() => 'ok');
+  t.mock.timers.tick(5000);
+  assert.deepEqual(proc.signals, ['SIGTERM', 'SIGKILL']);
+  proc.emit('exit');
+  await restarter.beforeRestart();
+  assert.equal(await pending, 'ok');
+});

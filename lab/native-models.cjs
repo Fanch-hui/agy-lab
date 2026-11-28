@@ -5,6 +5,7 @@
 // placeholder model enum that the official catalogue does not use. Bindings are persisted so
 // a model keeps its enum across restarts.
 const fs = require('node:fs');
+const { writeFileAtomic } = require('./atomic-file.cjs');
 const { reasoningVariants } = require('./reasoning.cjs');
 
 const MODEL_PREFIX = 'agy-ext-';
@@ -56,7 +57,17 @@ function variantsFor(connection) {
 class SlotTable {
   constructor(file) {
     this.file = file;
-    this.slots = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+    this.slots = {};
+    if (!file || !fs.existsSync(file)) return;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid slot table');
+      for (const [key, value] of Object.entries(parsed)) {
+        if (Number.isInteger(value) && value >= SLOT_FIRST && value <= SLOT_LAST) this.slots[key] = value;
+      }
+    } catch (error) {
+      console.error('无法读取外部模型编号表，已重置：', error.message);
+    }
   }
 
   // Binds every id to a placeholder number outside `reserved`; rebinding happens only when
@@ -81,8 +92,11 @@ class SlotTable {
       changed = true;
     }
     if (changed && this.file) {
-      fs.writeFileSync(this.file + '.tmp', JSON.stringify(this.slots), { mode: 0o600 });
-      fs.renameSync(this.file + '.tmp', this.file);
+      try {
+        writeFileAtomic(this.file, JSON.stringify(this.slots));
+      } catch (error) {
+        console.error('无法保存外部模型编号表：', error.message);
+      }
     }
     return Object.fromEntries(ids.map(id => [id, this.slots[id]]));
   }

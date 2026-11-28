@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import zipfile
@@ -68,6 +69,7 @@ def installer_metadata(installer):
         env={**os.environ, "AGY_INSTALLER_PATH": str(installer)},
         capture_output=True,
         text=True,
+        timeout=60,
     )
     if result.returncode != 0:
         raise RuntimeError("Unable to inspect the Antigravity installer signature: " + result.stderr.strip())
@@ -175,7 +177,12 @@ def extract_zip_safely(archive, destination):
     destination = destination.resolve()
     with zipfile.ZipFile(archive) as zip_file:
         for member in zip_file.infolist():
-            target = (destination / member.filename).resolve()
+            if stat.S_ISLNK(member.external_attr >> 16):
+                raise RuntimeError(f"Electron archive contains a symlink: {member.filename!r}")
+            normalized = member.filename.replace("\\", "/")
+            if normalized.startswith("/") or ":" in normalized.split("/", 1)[0]:
+                raise RuntimeError(f"Electron archive contains an unsafe path: {member.filename!r}")
+            target = (destination / normalized).resolve()
             if not target.is_relative_to(destination):
                 raise RuntimeError(f"Electron archive contains an unsafe path: {member.filename!r}")
             if member.is_dir():

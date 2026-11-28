@@ -144,3 +144,42 @@ test('preserves other changes made while an add is waiting for sign-in', async t
   assert.equal(result[0].active, true);
   assert.equal(await accounts.getAccessToken(), 'token-two');
 });
+
+test('switches active account immediately and prevents duplicate remove while signOut is pending', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-siwc-remove-race-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  let releaseSignOut;
+  const signOutGate = new Promise(resolve => { releaseSignOut = resolve; });
+  let signOutCalls = 0;
+  const accounts = createSiwcAccounts({
+    directory,
+    encryption: {},
+    createAuth({ storageFile }) {
+      let state = {};
+      return {
+        async signIn(options) {
+          state = { status: 'connected', subject: options.subject };
+          fs.writeFileSync(storageFile, JSON.stringify(state));
+        },
+        async signOut() {
+          signOutCalls += 1;
+          await signOutGate;
+          return { remoteRevoked: true };
+        },
+        getStatus: () => ({ status: state.status || 'disconnected', sharing: state.status === 'connected' }),
+        getSubject: () => state.subject,
+        getAccessToken: async () => `token-${state.subject}`,
+      };
+    },
+  });
+  const [first] = await accounts.add({ subject: 'one' });
+  await accounts.add({ subject: 'two' });
+  const removing = accounts.remove(first.id);
+  assert.equal(await accounts.getAccessToken(), 'token-two');
+  await assert.rejects(accounts.remove(first.id), { message: '该 ChatGPT 账号已移除。' });
+  releaseSignOut();
+  const result = await removing;
+  assert.equal(signOutCalls, 1);
+  assert.equal(result.remoteRevoked, true);
+  assert.equal(result.accounts.length, 1);
+});

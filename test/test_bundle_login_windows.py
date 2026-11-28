@@ -237,6 +237,21 @@ class WindowsPEPatchTest(unittest.TestCase):
                 struct.pack_into("<I", original, 0x98 + 108, directory_count)
                 self.assertEqual(self.strip_in_dist(original), bytes(original))
 
+    def test_pe64_rejects_truncated_headers_and_cross_section_reads(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            truncated = self.write_binary(temporary, b"MZ" + bytes(0x3E))
+            with truncated.open("rb") as stream:
+                with self.assertRaisesRegex(ValueError, "PE32\\+"):
+                    PE64Image(stream)
+
+            binary = self.write_binary(temporary, make_pe())
+            with binary.open("rb") as stream:
+                pe = PE64Image(stream)
+                with self.assertRaisesRegex(ValueError, "outside the file-backed part"):
+                    pe.read_rva(0x11FE, 4)
+                with self.assertRaisesRegex(ValueError, "crosses PE headers"):
+                    pe.read_rva(0x1FE, 4)
+
 
 if __name__ == "__main__":
     unittest.main()

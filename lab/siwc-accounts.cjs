@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { writeFileAtomic } = require('./atomic-file.cjs');
 const { createSiwcAuth } = require('./siwc.cjs');
 
 function createSiwcAccounts({ directory, encryption, createAuth = createSiwcAuth }) {
@@ -36,12 +37,7 @@ function createSiwcAccounts({ directory, encryption, createAuth = createSiwcAuth
     }
   }
   function writeIndex(index) {
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const temp = `${indexFile}.${crypto.randomUUID()}.tmp`;
-    try {
-      fs.writeFileSync(temp, JSON.stringify(index), { flag: 'wx', mode: 0o600 });
-      fs.renameSync(temp, indexFile);
-    } finally { fs.rmSync(temp, { force: true }); }
+    writeFileAtomic(indexFile, JSON.stringify(index));
   }
   function requireAccount(index, id) {
     if (!index.ids.includes(id)) throw new Error('该 ChatGPT 账号已移除。');
@@ -88,15 +84,17 @@ function createSiwcAccounts({ directory, encryption, createAuth = createSiwcAuth
     return list();
   }
   async function remove(id) {
-    const initial = readIndex();
-    const current = requireAccount(initial, id);
-    const result = await current.signOut();
-    const index = fs.existsSync(indexFile) ? readIndex() : initial;
-    requireAccount(index, id);
-    discard(id);
+    const index = readIndex();
+    const current = requireAccount(index, id);
     index.ids = index.ids.filter(existing => existing !== id);
     if (index.active === id) index.active = index.ids[0] ?? null;
     writeIndex(index);
+    let result;
+    try {
+      result = await current.signOut();
+    } finally {
+      discard(id);
+    }
     return { accounts: list(), remoteRevoked: result.remoteRevoked, warning: result.warning };
   }
   async function getAccessToken(signal) {

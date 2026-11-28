@@ -100,3 +100,27 @@ test('keeps SIWC and API key connections separate for the same model', async con
   });
   assert.deepEqual(await connections.discoverModels({ authType: 'siwc' }, signal), [{ id: 'gpt-5.4' }]);
 });
+
+test('reports corrupt connections store without altering it and rejects invalid baseUrl', context => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-corrupt-connections-'));
+  context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const modulePath = require.resolve('../lab/connections.cjs');
+  delete require.cache[modulePath];
+  const originalLoad = Module._load;
+  let connections;
+  try {
+    Module._load = function(request, ...args) {
+      if (request !== 'electron') return originalLoad.call(this, request, ...args);
+      return { app: { getPath: () => directory }, safeStorage: {
+        isEncryptionAvailable: () => true, encryptString: value => Buffer.from(value), decryptString: value => value.toString(),
+      } };
+    };
+    connections = require(modulePath);
+  } finally { Module._load = originalLoad; delete require.cache[modulePath]; }
+
+  assert.throws(() => connections.saveDiscoveredModels({ baseUrl: null, models: [{ id: 'm' }] }), /接口根地址/);
+  const storeFile = path.join(directory, 'model-connections.json');
+  fs.writeFileSync(storeFile, '{corrupt');
+  assert.throws(() => connections.listConnections(), /原文件未更改/);
+  assert.equal(fs.readFileSync(storeFile, 'utf8'), '{corrupt');
+});

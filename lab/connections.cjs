@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { app, safeStorage } = require('electron');
+const { writeFileAtomic } = require('./atomic-file.cjs');
 const { normalizeBaseUrl } = require('./provider.cjs');
 const { discoverModels: fetchModels, normalizeReasoningEfforts } = require('./model-discovery.cjs');
 
@@ -17,14 +18,24 @@ function filename() {
 
 function records() {
   const file = filename();
-  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : [];
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error();
+    return parsed;
+  } catch {
+    throw new Error('无法读取已保存的模型连接，原文件未更改。');
+  }
 }
 
 function write(rows) {
-  const file = filename();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file + '.tmp', JSON.stringify(rows), { mode: 0o600 });
-  fs.renameSync(file + '.tmp', file);
+  writeFileAtomic(filename(), JSON.stringify(rows));
 }
 
 function publicRow({ id, model, baseUrl, reasoningEfforts, authType, contextTokens }) {
@@ -44,7 +55,11 @@ function getConnection(id) {
   const row = records().find(item => item.id === id);
   if (!row) throw new Error('该连接已移除。');
   if (row.authType === 'siwc') throw new Error('ChatGPT 订阅连接需要异步获取令牌。');
-  const apiKey = row.key ? safeStorage.decryptString(Buffer.from(row.key, 'base64')) : '';
+  let apiKey = '';
+  if (row.key) {
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('系统密钥存储不可用。');
+    apiKey = safeStorage.decryptString(Buffer.from(row.key, 'base64'));
+  }
   return { ...publicRow(row), apiKey };
 }
 
@@ -72,12 +87,15 @@ async function resolveConnection(id, signal) {
 }
 
 async function discoverModels(input, signal) {
+  if (!input || typeof input !== 'object') throw new Error('无效的模型发现请求。');
   const connection = input.connectionId ? await resolveConnection(input.connectionId, signal)
     : input.authType === 'siwc' ? { authType: 'siwc', baseUrl: siwc.SIWC_RESOURCE_URL, apiKey: await accounts.getAccessToken(signal) } : input;
   return fetchModels(connection, signal);
 }
 
-function saveDiscoveredModels({ connectionId, baseUrl, apiKey, models, authType }) {
+function saveDiscoveredModels(input) {
+  if (!input || typeof input !== 'object') throw new Error('请选择要添加的模型。');
+  let { connectionId, baseUrl, apiKey, models, authType } = input;
   if (!Array.isArray(models) || !models.length ||
       models.some(model => typeof model?.id !== 'string' || !model.id.trim())) {
     throw new Error('请选择要添加的模型。');
@@ -92,6 +110,7 @@ function saveDiscoveredModels({ connectionId, baseUrl, apiKey, models, authType 
     isSiwc = source.authType === 'siwc';
     key = source.key;
   } else if (!isSiwc) {
+    if (typeof baseUrl !== 'string' || !baseUrl.trim()) throw new Error('请输入有效的接口根地址。');
     baseUrl = normalizeBaseUrl(baseUrl.trim());
     if (apiKey) {
       if (!safeStorage.isEncryptionAvailable()) throw new Error('系统密钥存储不可用。');

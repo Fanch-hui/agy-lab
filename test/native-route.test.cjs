@@ -122,7 +122,7 @@ async function nativeFixture(context, providerReplies, siwc = false) {
   });
   const origin = await listen(upstream);
   const providerUrl = await listen(providerServer);
-  const directory = temporaryDirectory(context);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-native-route-test-'));
   const connection = siwc ? { id: CONNECTION_ID, model: 'gpt-5.4', baseUrl: 'https://api.openai.com/v1', authType: 'siwc' }
     : { id: CONNECTION_ID, model: 'local-coder', baseUrl: providerUrl + '/v1' };
   const external = createNativeRoute({
@@ -143,6 +143,7 @@ async function nativeFixture(context, providerReplies, siwc = false) {
       server.closeAllConnections();
       await new Promise(resolve => server.close(resolve));
     }
+    fs.rmSync(directory, { recursive: true, force: true });
   });
   return { proxy, google, provider, providerUrl };
 }
@@ -283,4 +284,41 @@ test('routes SIWC Responses with local reasoning replay and unchanged Google tra
   await (await generation(proxy, official)).text();
   assert.equal(google.find(row => row.url.startsWith('/v1internal:streamGenerateContent')).body.toString(), JSON.stringify(official));
   await proxy.close();
+});
+
+test('recovers cleanly from corrupt slot, signature and stability files and missing routes', async context => {
+  const { PromptStability } = require('../lab/prompt-stability.cjs');
+  const directory = temporaryDirectory(context);
+  const slotFile = path.join(directory, 'slots.json');
+  const sigFile = path.join(directory, 'signatures.json');
+  const catFile = path.join(directory, 'catalog.json');
+  fs.writeFileSync(slotFile, '{not-json');
+  fs.writeFileSync(sigFile, '{"not":"an-array"}');
+  fs.writeFileSync(catFile, '["bad"]');
+
+  const slotTable = new SlotTable(slotFile);
+  assert.deepEqual(slotTable.assign(['agy-ext-test'], []), { 'agy-ext-test': 1200 });
+
+  const signatures = new SignatureStore(sigFile);
+  assert.equal(signatures.entries.size, 0);
+
+  const stability = new PromptStability(catFile);
+  const applied = stability.apply('conn-1', { tools: [{ functionDeclarations: [{ name: 'read_file' }] }] });
+  assert.deepEqual(applied.allowedTools, ['read_file']);
+
+  const route = createNativeRoute({
+    listConnections: () => [],
+    getConnection: () => { throw new Error('missing'); },
+    generate, slotTable, signatures,
+  });
+  let statusCode;
+  let body = '';
+  await route.handle({ model: `${GROUP}-medium`, request: {} }, {
+    writableFinished: false,
+    on() {},
+    writeHead(code) { statusCode = code; },
+    end(chunk) { body += chunk; },
+  });
+  assert.equal(statusCode, 404);
+  assert.match(JSON.parse(body).error.message, /已移除/);
 });
