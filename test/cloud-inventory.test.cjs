@@ -111,3 +111,14 @@ test('logs every external call and describes each prefix variant once', t => {
   assert.equal(inventory.snapshot()[0].recentCalls.length, 200);
   clearTimeout(inventory.timer);
 });
+
+test('blocks decompression bombs and ignores malformed outline histories', () => {
+  const { decodeBody } = require('../lab/cloud-inventory.cjs');
+  const compressed = zlib.gzipSync(Buffer.alloc(4096, 0x41));
+  assert.throws(() => decodeBody(compressed, 'gzip', 512));
+
+  const inventory = new Inventory();
+  inventory.outline('/agy-lab-external/x', 'not-an-array');
+  inventory.outline('/agy-lab-external/x', [{ role: 'user', parts: 'not-parts' }]);
+  assert.equal(inventory.snapshot().length, 1);
+});

@@ -62,3 +62,25 @@ test('does not retry a request the caller cancelled', async () => {
   }));
   assert.equal(calls, 1);
 });
+
+test('aborts retry backoff immediately when cancelled and bounds oversized SSE events', async () => {
+  const { postStream, sseData } = require('../lab/provider-wire.cjs');
+  const controller = new AbortController();
+  const reset = () => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('reset'), { code: 'ECONNRESET' }) });
+  setTimeout(() => controller.abort(new DOMException('cancelled', 'AbortError')), 20);
+  const start = Date.now();
+  await assert.rejects(postStream('https://example.test', { signal: controller.signal }, {
+    delay: 5000, fetch: async () => { throw reset(); },
+  }), { name: 'AbortError' });
+  assert.ok(Date.now() - start < 1000);
+
+  const oversized = new ReadableStream({
+    start(ctrl) {
+      ctrl.enqueue(Buffer.alloc(16 * 1024 * 1024 + 16, 0x61));
+      ctrl.close();
+    },
+  });
+  await assert.rejects((async () => {
+    for await (const _ of sseData(oversized)) { /* consume */ }
+  })(), /oversized stream event/);
+});

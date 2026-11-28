@@ -68,14 +68,34 @@ function collectResponse(incoming, inventory, request) {
 // Sends a rewritten copy of a successful JSON response; the original bytes are still sampled.
 function rewriteResponse(incoming, response, inventory, request, rewrite) {
   const chunks = [];
-  incoming.on('data', chunk => chunks.push(chunk));
+  let size = 0;
+  let aborted = false;
+  incoming.on('data', chunk => {
+    if (aborted) return;
+    size += chunk.length;
+    if (size > MAX_BODY) {
+      aborted = true;
+      chunks.length = 0;
+      incoming.destroy();
+      if (!response.headersSent) {
+        response.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+        response.end(JSON.stringify({ error: { code: 502, message: 'Cloud catalogue response exceeds the proxy limit' } }));
+      } else {
+        response.destroy();
+      }
+      return;
+    }
+    chunks.push(chunk);
+  });
   incoming.on('end', () => {
+    if (aborted) return;
     const original = Buffer.concat(chunks);
     inventory.sampleResponse(request.method, request.url, original, incoming.headers);
     const headers = forwardedHeaders(incoming.rawHeaders, ['content-encoding', 'content-length']);
     let body;
     try {
-      body = Buffer.from(JSON.stringify(rewrite(JSON.parse(decodeBody(original, incoming.headers['content-encoding']).toString('utf8')))));
+      const decoded = decodeBody(original, incoming.headers['content-encoding'], MAX_BODY).toString('utf8');
+      body = Buffer.from(JSON.stringify(rewrite(JSON.parse(decoded))));
     } catch (error) {
       console.error('无法向模型目录加入外部模型：', error.message);
       response.writeHead(incoming.statusCode, incoming.statusMessage, forwardedHeaders(incoming.rawHeaders));
@@ -90,6 +110,12 @@ function rewriteResponse(incoming, response, inventory, request, rewrite) {
 function forward({ upstream, agent, inventory }, request, response, body, model, rewrite) {
   // Only origin-form paths are accepted, so a request can never redirect the proxy to another host.
   const target = new URL(upstream.origin + request.url);
+  if (target.origin !== upstream.origin) {
+    inventory.record({ method: request.method, url: '/', status: 'rejected' });
+    response.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+    response.end(JSON.stringify({ error: { code: 400, message: 'Only Cloud Code paths are forwarded' } }));
+    return;
+  }
   const client = target.protocol === 'https:' ? https : http;
   let recorded = false;
   const record = status => {
@@ -152,42 +178,60 @@ async function startCloudProxy({ upstream, inventoryFile, external }) {
   const agent = new (upstreamUrl.protocol === 'https:' ? https : http).Agent({ keepAlive: true });
   const context = { upstream: upstreamUrl, agent, inventory };
   const server = http.createServer(async (request, response) => {
-    if (probes.has(request.url)) {
-      probes.get(request.url).arrived = true;
-      probes.delete(request.url);
-      response.writeHead(204);
-      response.end();
-      return;
-    }
-    let body;
     try {
-      body = await readBody(request);
+      if (probes.has(request.url)) {
+        probes.get(request.url).arrived = true;
+        probes.delete(request.url);
+        response.writeHead(204);
+        response.end();
+        return;
+      }
+      let body;
+      try {
+        body = await readBody(request);
+      } catch (error) {
+        inventory.record({ method: request.method, url: request.url, status: 'rejected' });
+        response.writeHead(413, { 'content-type': 'application/json; charset=utf-8' });
+        response.end(JSON.stringify({ error: { code: 413, message: error.message } }));
+        return;
+      }
+      let parsed;
+      if (request.url.startsWith('/') && !request.url.startsWith('//') && !request.url.startsWith('/\\')) {
+        try {
+          parsed = new URL(request.url, 'http://localhost');
+        } catch {
+          parsed = undefined;
+        }
+      }
+      if (!parsed || parsed.origin !== 'http://localhost') {
+        inventory.record({ method: request.method, url: '/', status: 'rejected' });
+        response.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+        response.end(JSON.stringify({ error: { code: 400, message: 'Only Cloud Code paths are forwarded' } }));
+        return;
+      }
+      const pathname = parsed.pathname;
+      const value = jsonBody(body, request.headers['content-type']);
+      const model = modelOf(value);
+      if (external && pathname === GENERATE_PATH && external.matches(model)) {
+        // External generations never reach Google and are listed apart from Google traffic.
+        inventory.outline('/agy-lab-external' + pathname, value.request?.contents);
+        const result = await external.handle(value, response);
+        if (result) inventory.externalCall('/agy-lab-external' + pathname, { ...result, model });
+        inventory.record({ method: request.method, url: '/agy-lab-external' + pathname, model, status: response.statusCode });
+        return;
+      }
+      inventory.sampleRequest(request.method, request.url, body, request.headers['content-type']);
+      const rewrite = external && pathname === CATALOGUE_PATH ? external.rewriteCatalogue : undefined;
+      forward(context, request, response, body, model, rewrite);
     } catch (error) {
-      inventory.record({ method: request.method, url: request.url, status: 'rejected' });
-      response.writeHead(413, { 'content-type': 'application/json; charset=utf-8' });
-      response.end(JSON.stringify({ error: { code: 413, message: error.message } }));
-      return;
+      console.error('[agy-lab] Proxy request error:', error.message);
+      if (!response.headersSent) {
+        response.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+        response.end(JSON.stringify({ error: { code: 500, message: 'Internal proxy error' } }));
+      } else {
+        response.destroy();
+      }
     }
-    if (!request.url.startsWith('/') || request.url.startsWith('//')) {
-      inventory.record({ method: request.method, url: '/', status: 'rejected' });
-      response.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
-      response.end(JSON.stringify({ error: { code: 400, message: 'Only Cloud Code paths are forwarded' } }));
-      return;
-    }
-    const pathname = new URL(request.url, 'http://localhost').pathname;
-    const value = jsonBody(body, request.headers['content-type']);
-    const model = modelOf(value);
-    if (external && pathname === GENERATE_PATH && external.matches(model)) {
-      // External generations never reach Google and are listed apart from Google traffic.
-      inventory.outline('/agy-lab-external' + pathname, value.request?.contents);
-      const result = await external.handle(value, response);
-      if (result) inventory.externalCall('/agy-lab-external' + pathname, { ...result, model });
-      inventory.record({ method: request.method, url: '/agy-lab-external' + pathname, model, status: response.statusCode });
-      return;
-    }
-    inventory.sampleRequest(request.method, request.url, body, request.headers['content-type']);
-    const rewrite = external && pathname === CATALOGUE_PATH ? external.rewriteCatalogue : undefined;
-    forward(context, request, response, body, model, rewrite);
   });
   // Generation responses are long-lived streams.
   server.requestTimeout = 0;

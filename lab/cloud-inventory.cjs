@@ -7,6 +7,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const { writeFileAtomic } = require('./atomic-file.cjs');
 
 const SAMPLED = {
   '/v1internal:streamGenerateContent': { request: true, response: true },
@@ -70,12 +71,12 @@ function serializeShape(shape) {
   return out;
 }
 
-function decodeBody(buffer, encoding) {
+function decodeBody(buffer, encoding, maxOutputLength = MAX_SAMPLE) {
   switch ((encoding || 'identity').toLowerCase()) {
     case 'identity': return buffer;
-    case 'gzip': return zlib.gunzipSync(buffer);
-    case 'deflate': return zlib.inflateSync(buffer);
-    case 'br': return zlib.brotliDecompressSync(buffer);
+    case 'gzip': return zlib.gunzipSync(buffer, { maxOutputLength });
+    case 'deflate': return zlib.inflateSync(buffer, { maxOutputLength });
+    case 'br': return zlib.brotliDecompressSync(buffer, { maxOutputLength });
     default: throw new Error(`Unsupported content encoding: ${encoding}`);
   }
 }
@@ -106,7 +107,10 @@ class Inventory {
     // summary's recent window. Each prefix variant is described once, when first seen.
     this.callsFile = file ? path.join(path.dirname(file), 'external-calls.jsonl') : undefined;
     this.loggedVariants = new Set();
-    this.appendCalls(() => fs.writeFileSync(this.callsFile, '', { mode: 0o600 }));
+    this.appendCalls(() => {
+      fs.mkdirSync(path.dirname(this.callsFile), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(this.callsFile, '', { mode: 0o600 });
+    });
   }
 
   appendCalls(write) {
@@ -155,9 +159,11 @@ class Inventory {
   // Records the role and part kinds of an external history, with tool names and call-id
   // presence only, to diagnose how the language server orders tool calls and results.
   outline(url, contents) {
+    if (!Array.isArray(contents)) return;
     const { entry } = this.entry('POST', url);
     const ids = new Map();
-    const outline = (contents || []).map(content => `${content.role}: ` + (content.parts || []).map(part => {
+    const outline = contents.map(content => `${content?.role ?? 'unknown'}: ` + (Array.isArray(content?.parts) ? content.parts : []).map(part => {
+      if (!part || typeof part !== 'object') return 'unknown';
       if (part.functionCall) {
         const { id, name } = part.functionCall;
         if (id) ids.set(id, `c${ids.size + 1}`);
@@ -255,11 +261,9 @@ class Inventory {
 
   write() {
     if (!this.file) return;
-    const temporary = `${this.file}.${process.pid}.tmp`;
     const content = JSON.stringify({ updatedAt: new Date().toISOString(), requests: this.snapshot() }, null, 2);
     try {
-      fs.writeFileSync(temporary, content + '\n', { mode: 0o600 });
-      fs.renameSync(temporary, this.file);
+      writeFileAtomic(this.file, content + '\n');
     } catch (error) {
       // The inventory is diagnostic; a failed write must not interrupt model traffic.
       console.error('无法保存云端请求清单：', error.message);

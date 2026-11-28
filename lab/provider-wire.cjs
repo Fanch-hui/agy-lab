@@ -139,6 +139,8 @@ function toolsFor(request) {
   return declarations;
 }
 
+const MAX_SSE_EVENT = 16 * 1024 * 1024;
+
 async function* sseData(body) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -152,9 +154,11 @@ async function* sseData(body) {
       while ((boundary = /\r\n\r\n|\r\n\n|\n\r\n|\n\n|\r\r/.exec(buffer))) {
         const event = buffer.slice(0, boundary.index);
         buffer = buffer.slice(boundary.index + boundary[0].length);
+        if (event.length > MAX_SSE_EVENT) throw new Error('The model provider returned an oversized stream event');
         const lines = event.split(/\r\n|\r|\n/).filter((line) => line.startsWith('data:'));
         if (lines.length) yield lines.map((line) => line.slice(5).replace(/^ /, '')).join('\n');
       }
+      if (buffer.length > MAX_SSE_EVENT) throw new Error('The model provider returned an oversized stream event');
       if (done) {
         ended = true;
         if (buffer.trim()) throw new Error('The model stream ended with an incomplete event');
@@ -169,6 +173,21 @@ async function* sseData(body) {
 
 const CONNECT_RETRIES = 3;
 const CONNECT_RETRY_DELAY_MS = 1000;
+
+function sleepWithSignal(ms, signal) {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 // The network error under undici's generic "fetch failed", e.g. "ECONNRESET: other side closed".
 function networkCause(error) {
@@ -194,8 +213,7 @@ async function postStream(url, init, { fetch: send = fetch, delay = CONNECT_RETR
         throw new Error(`${error.message}${cause ? ` (${cause})` : ''}，已自动重试 ${CONNECT_RETRIES} 次`, { cause: error });
       }
       console.error(`[agy-lab] Model request failed before a response${cause ? ` (${cause})` : ''}; retry ${attempt}/${CONNECT_RETRIES}.`);
-      await new Promise(resolve => setTimeout(resolve, delay * 2 ** (attempt - 1)));
-      if (init.signal?.aborted) throw error;
+      await sleepWithSignal(delay * 2 ** (attempt - 1), init.signal);
     }
   }
 }
