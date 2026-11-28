@@ -96,7 +96,10 @@ def validate_installer(installer, version):
 
 def tree_sha256(root):
     digest = hashlib.sha256()
-    files = sorted(path for path in root.rglob("*") if path.is_file())
+    files = sorted(
+        (path for path in root.rglob("*") if path.is_file()),
+        key=lambda path: [part.lower() for part in path.relative_to(root).parts],
+    )
     for path in files:
         digest.update(path.relative_to(root).as_posix().encode("utf-8"))
         digest.update(b"\0")
