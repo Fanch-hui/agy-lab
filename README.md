@@ -73,13 +73,14 @@ WSL 里的语言服务还需要能访问 Windows 上的 Lab 模型代理：在 `
 
 ### 可选：中文界面
 
-准备一份可信的 `antigravity-zh` 检出目录。仓库只提供集成代码，不附带上游源码或词库。构建会执行该目录中的代码，因此请先确认来源和适用许可：
+中文界面来自同一作者的 [antigravity-zh](https://github.com/Fanch-hui/antigravity-zh) 项目（MIT 许可证）。本仓库只包含集成代码，不附带它的源码或词库，构建时指向一份它的检出目录即可。构建会执行该目录中的代码，如果使用其他来源的副本，请先确认来源可信：
 
 ```sh
+git clone https://github.com/Fanch-hui/antigravity-zh.git /path/to/antigravity-zh
 python3 scripts/build_app.py --source /Applications/Antigravity.app --zh /path/to/antigravity-zh
 ```
 
-构建先运行汉化项目的界面兼容性检查，不通过即停止。翻译脚本只在应用主界面文档准备就绪后运行，不开启调试端口，也不作用于内置浏览器标签页。
+构建先运行汉化项目的界面兼容性检查，不通过即停止；Antigravity 出新版本后，需要等 antigravity-zh 适配该版本才能带中文界面构建。翻译脚本只在应用主界面文档准备就绪后运行，不开启调试端口，也不作用于内置浏览器标签页。
 
 ### 验证与常见问题
 
@@ -94,4 +95,4 @@ python3 scripts/build_app.py --source /Applications/Antigravity.app --zh /path/t
 
 ## 许可证
 
-本项目自有源码采用 [MIT 许可证](LICENSE)。Antigravity、Electron 和外部汉化项目不因本仓库的许可而改变各自的授权条款。
+本项目自有源码采用 [MIT 许可证](LICENSE)。Antigravity、Electron 和 antigravity-zh 不因本仓库的许可而改变各自的授权条款。
