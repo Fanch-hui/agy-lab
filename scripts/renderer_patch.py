@@ -20,14 +20,17 @@ def patch_source(source):
 
 
 def find_renderer(binary):
-    local_matches = list(re.finditer(rb"PK\x03\x04.{26}main\.js", binary, re.S))
+    local_matches = [
+        match for match in re.finditer(rb"PK\x03\x04.{26}main\.js", binary, re.S)
+        if struct.unpack_from("<H", binary, match.start() + 26)[0] == 7
+    ]
     if len(local_matches) != 1:
         raise RuntimeError("Embedded renderer local ZIP entry was not unique")
     local = local_matches[0].start()
     flags, method = struct.unpack_from("<HH", binary, local + 6)
     crc, size, raw_size = struct.unpack_from("<III", binary, local + 14)
     name_length, extra_length = struct.unpack_from("<HH", binary, local + 26)
-    if flags != 0 or method != 8:
+    if flags != 0 or method != 8 or name_length != 7:
         raise RuntimeError("Embedded renderer ZIP layout is unsupported")
 
     data_start = local + 30 + name_length + extra_length
@@ -37,7 +40,7 @@ def find_renderer(binary):
         position = binary.find(b"PK\x01\x02", position)
         if position < 0:
             break
-        if binary[position + 46:position + 53] == b"main.js":
+        if position + 53 <= len(binary) and struct.unpack_from("<H", binary, position + 28)[0] == 7 and binary[position + 46:position + 53] == b"main.js":
             if struct.unpack_from("<III", binary, position + 16) == (crc, size, raw_size):
                 entries.append(position)
         position += 4

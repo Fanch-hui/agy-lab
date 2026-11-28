@@ -5,6 +5,8 @@ own. The Windows x64 2.35.1 and 2.35.2 servers share one PE64 layout; 2.36.0
 has its own.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
 import plistlib
@@ -202,11 +204,16 @@ class PE64Image:
         if stream.read(2) != b"MZ":
             raise ValueError("expected a PE32+ x86-64 language server")
         stream.seek(0x3C)
-        self.pe_offset = struct.unpack("<I", stream.read(4))[0]
+        offset_bytes = stream.read(4)
+        if len(offset_bytes) != 4:
+            raise ValueError("expected a PE32+ x86-64 language server")
+        self.pe_offset = struct.unpack("<I", offset_bytes)[0]
         stream.seek(self.pe_offset)
         if stream.read(4) != b"PE\0\0":
             raise ValueError("expected a PE32+ x86-64 language server")
         header = stream.read(20)
+        if len(header) != 20:
+            raise ValueError("truncated PE32+ header")
         machine, section_count, _, _, _, optional_size, _ = struct.unpack("<HHIIIHH", header)
         self.optional_offset = self.pe_offset + 24
         stream.seek(self.optional_offset)
@@ -234,24 +241,28 @@ class PE64Image:
             virtual_size, virtual_address, raw_size, raw_offset = struct.unpack_from("<IIII", raw, 8)
             self.sections.append((name, virtual_address, virtual_size, raw_offset, raw_size))
 
-    def rva_to_offset(self, rva):
+    def rva_to_offset(self, rva, size=1):
+        if size < 0 or rva < 0:
+            raise ValueError(f"Invalid PE RVA range {rva:#x}+{size:#x}")
         if rva < self.size_of_headers:
+            if rva + size > self.size_of_headers:
+                raise ValueError(f"RVA {rva:#x}+{size:#x} crosses PE headers")
             return rva
         for _, virtual_address, virtual_size, raw_offset, raw_size in self.sections:
             span = max(virtual_size, raw_size)
             if virtual_address <= rva < virtual_address + span:
                 delta = rva - virtual_address
-                if delta >= raw_size:
+                if delta + size > raw_size:
                     raise ValueError(f"RVA {rva:#x} is outside the file-backed part of its section")
                 return raw_offset + delta
         raise ValueError(f"RVA {rva:#x} is not mapped by the PE section table")
 
     def read_rva(self, rva, size):
-        self.stream.seek(self.rva_to_offset(rva))
+        self.stream.seek(self.rva_to_offset(rva, size))
         return self.stream.read(size)
 
     def write_rva(self, rva, data):
-        self.stream.seek(self.rva_to_offset(rva))
+        self.stream.seek(self.rva_to_offset(rva, len(data)))
         self.stream.write(data)
 
 
