@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { createGoogleAccounts } = require('../lab/google-accounts.cjs');
+const { createKeychainSlot } = require('../lab/google-credential-slot.cjs');
 
 function value(email, token = 'refresh-fixture') {
   return 'go-keyring-base64:' + Buffer.from(JSON.stringify({ token: { refresh_token: token }, id_token_email: email })).toString('base64');
@@ -32,6 +33,7 @@ function fixture(t) {
   };
   const slot = {
     value: undefined, writes: 0, removals: 0,
+    payloadOf: createKeychainSlot({ service: 'test', account: 'test' }).payloadOf,
     async read() { return this.value; },
     async write(next) { this.writes++; this.value = next; },
     async remove() { this.removals++; this.value = undefined; },
@@ -141,4 +143,58 @@ test('reports a corrupt store without changing it', async t => {
   fs.writeFileSync(storageFile, '{broken');
   await assert.rejects(accounts.list(), { message: '无法读取已保存的 Google 账号，原文件未更改。' });
   assert.equal(fs.readFileSync(storageFile, 'utf8'), '{broken');
+});
+
+test('stores and switches raw JSON credentials with a Windows-style slot', async t => {
+  const { accounts, slot, stored } = fixture(t);
+  slot.payloadOf = text => {
+    if (typeof text !== 'string' || !text) throw new Error('invalid');
+    return text;
+  };
+  const first = JSON.stringify({ token: { refresh_token: 'one' }, id_token_email: '一@example.test' });
+  const second = JSON.stringify({ token: { refresh_token: 'two' }, id_token_email: 'two@example.test' });
+  slot.value = first;
+  await accounts.prepareAdd();
+  slot.value = second;
+  await accounts.list();
+  assert.deepEqual(stored().accounts, [
+    { email: '一@example.test', value: first }, { email: 'two@example.test', value: second },
+  ]);
+  await accounts.switchTo('一@example.test');
+  assert.equal(slot.value, first);
+});
+
+test('the default Windows manager checks WSL status on every call', async t => {
+  const Module = require('node:module');
+  const credential = require('../lab/google-credential-slot.cjs');
+  const wsl = require('../lab/wsl.cjs');
+  const modulePath = require.resolve('../lab/google-accounts.cjs');
+  const originalCache = require.cache[modulePath];
+  const originalLoad = Module._load;
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-google-wsl-'));
+  t.after(() => {
+    Object.defineProperty(process, 'platform', platform);
+    Module._load = originalLoad;
+    require.cache[modulePath] = originalCache;
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  let active = false;
+  t.mock.method(wsl, 'isActive', () => active);
+  t.mock.method(credential, 'labSlot', () => ({ async read() { return undefined; } }));
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  Module._load = function(request, ...args) {
+    if (request === 'electron') return { app: { getPath: () => directory }, safeStorage: { isEncryptionAvailable: () => true } };
+    return originalLoad.call(this, request, ...args);
+  };
+  delete require.cache[modulePath];
+  const defaults = require(modulePath);
+  assert.deepEqual(await defaults.list(), { supported: true, accounts: [] });
+  active = true;
+  assert.deepEqual(await defaults.list(), { supported: false, accounts: [] });
+  for (const action of [() => defaults.switchTo('a'), () => defaults.prepareAdd(), () => defaults.remove('a')]) {
+    await assert.rejects(action(), { message: 'WSL 工作区暂不支持切换 Google 账号。' });
+  }
+  active = false;
+  assert.deepEqual(await defaults.list(), { supported: true, accounts: [] });
 });

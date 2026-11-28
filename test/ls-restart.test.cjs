@@ -66,3 +66,51 @@ test('clears the escalation timer when the process exits', async t => {
   await restarter.beforeRestart();
   await pending;
 });
+
+test('uses the supplied termination function', async () => {
+  const proc = processFixture();
+  const calls = [];
+  const restarter = createRestarter(() => proc, current => { calls.push(current); });
+  const pending = restarter.restartWith(() => 'done');
+  assert.deepEqual(calls, [proc]);
+  assert.deepEqual(proc.signals, []);
+  proc.emit('exit');
+  await restarter.beforeRestart();
+  assert.equal(await pending, 'done');
+});
+
+test('Windows termination uses taskkill and falls back to SIGTERM on failure', async t => {
+  const childProcess = require('node:child_process');
+  const modulePath = require.resolve('../lab/ls-restart.cjs');
+  const originalCache = require.cache[modulePath];
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  t.after(() => {
+    Object.defineProperty(process, 'platform', platform);
+    require.cache[modulePath] = originalCache;
+  });
+  let failure = false;
+  const calls = [];
+  t.mock.method(childProcess, 'execFile', (command, args, options, callback) => {
+    calls.push({ command, args, options });
+    queueMicrotask(() => callback(failure ? new Error('taskkill failed') : null));
+  });
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  delete require.cache[modulePath];
+  const { createRestarter: createWindowsRestarter } = require(modulePath);
+  const proc = processFixture();
+  proc.pid = 123;
+  const restarter = createWindowsRestarter(() => proc);
+  const first = restarter.restartWith(() => 'first');
+  assert.deepEqual(calls[0], { command: 'taskkill', args: ['/pid', '123', '/T', '/F'],
+    options: { timeout: 5000, windowsHide: true } });
+  proc.emit('exit');
+  await restarter.beforeRestart();
+  assert.equal(await first, 'first');
+  failure = true;
+  const second = restarter.restartWith(() => 'second');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(proc.signals, ['SIGTERM']);
+  proc.emit('exit');
+  await restarter.beforeRestart();
+  assert.equal(await second, 'second');
+});

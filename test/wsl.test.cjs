@@ -149,3 +149,17 @@ test('LINK_SCRIPT creates nothing when originals are absent', posixOnly, context
   runLinkScript(home);
   assert.equal(fs.existsSync(path.join(home, '.agy-lab')), false);
 });
+
+test('marks WSL active as soon as server preparation starts', async context => {
+  const Module = require('node:module');
+  const wsl = require('../lab/wsl.cjs');
+  const originalLoad = Module._load;
+  context.after(() => { Module._load = originalLoad; });
+  Module._load = function(request, ...args) {
+    if (request === '../wsl') return { getDistroHome: async () => { throw new Error('fixture stop'); } };
+    return originalLoad.call(this, request, ...args);
+  };
+  assert.equal(wsl.isActive(), false);
+  await assert.rejects(wsl.prepareServer('fixture', '', ''), /fixture stop/);
+  assert.equal(wsl.isActive(), true);
+});

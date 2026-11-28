@@ -15,6 +15,7 @@ done`;
 
 const FORWARDED_AUTH_APP = 'ANTIGRAVITY_AUTH_SUCCESS_APP/u';
 let warnedUnreachable = false;
+let active = false;
 
 function serverSha256() {
   try {
@@ -68,6 +69,7 @@ function warnUnreachable() {
 }
 
 async function prepareServer(distro, proxyEndpoint, officialEndpoint) {
+  active = true;
   const wsl = require('../wsl');
   const home = await wsl.getDistroHome(distro);
   const { execFile } = require('node:child_process');
@@ -100,5 +102,6 @@ module.exports = {
   forwardEnv,
   proxyReachable,
   prepareServer,
+  isActive: () => active,
   warnUnreachable,
 };

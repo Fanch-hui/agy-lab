@@ -15,8 +15,8 @@
 第三方模型可以与官方模型在同一会话中交替使用，也可以担任 Orchestrator 的规划者或执行者。读写文件、运行命令和工具审批仍由 Antigravity 处理。
 
 ChatGPT 订阅可添加多个账号，手动切换当前账号；所有 ChatGPT 连接使用当前账号。
-macOS 上可保存并手动切换多个 Google 账号，切换后主窗口会重新加载；添加时在主窗口登录新账号。
-移除 Google 账号只在本机忘记该账号，不会撤销 Google 授权。Windows 暂不支持 Google 账号切换。
+macOS 和 Windows 本地工作区可保存并手动切换多个 Google 账号，切换后主窗口会重新加载；添加时在主窗口登录新账号。
+移除 Google 账号只在本机忘记该账号，不会撤销 Google 授权。Windows 功能尚未在真实 Windows 上验收，WSL 工作区暂不支持 Google 账号切换。
 
 ### 请求去向与诊断
 

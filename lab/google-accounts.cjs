@@ -5,10 +5,9 @@ const crypto = require('node:crypto');
 const { labSlot } = require('./google-credential-slot.cjs');
 const restarter = require('./ls-restart.cjs');
 
-function emailOf(value) {
+function emailOf(slot, value) {
   try {
-    if (typeof value !== 'string' || !/^go-keyring-base64:[A-Za-z0-9+/]+={0,2}$/.test(value)) throw new Error();
-    const data = JSON.parse(Buffer.from(value.slice('go-keyring-base64:'.length), 'base64').toString('utf8'));
+    const data = JSON.parse(slot.payloadOf(value));
     if (typeof data?.token?.refresh_token !== 'string' || !data.token.refresh_token ||
         typeof data.id_token_email !== 'string' || !data.id_token_email) throw new Error();
     return data.id_token_email;
@@ -34,7 +33,7 @@ function createGoogleAccounts({ storageFile, encryption, slot, restartWith }) {
       const envelope = JSON.parse(fs.readFileSync(storageFile, 'utf8'));
       if (envelope.version !== 1 || typeof envelope.encrypted !== 'string') throw new Error();
       const data = JSON.parse(encryption.decrypt(Buffer.from(envelope.encrypted, 'base64')));
-      if (!Array.isArray(data.accounts) || data.accounts.some(row => !row || emailOf(row.value) !== row.email) ||
+      if (!Array.isArray(data.accounts) || data.accounts.some(row => !row || emailOf(slot, row.value) !== row.email) ||
           new Set(data.accounts.map(row => row.email)).size !== data.accounts.length) throw new Error();
       return data;
     } catch (error) {
@@ -56,7 +55,7 @@ function createGoogleAccounts({ storageFile, encryption, slot, restartWith }) {
     const data = readStore();
     const value = await slot.read();
     if (value === undefined) return { data, current: undefined };
-    const current = emailOf(value);
+    const current = emailOf(slot, value);
     const saved = data.accounts.find(row => row.email === current);
     if (!saved || saved.value !== value) {
       if (saved) saved.value = value;
@@ -124,4 +123,10 @@ function defaults() {
   return singleton;
 }
 module.exports = { createGoogleAccounts,
-  ...Object.fromEntries(['list', 'switchTo', 'prepareAdd', 'remove'].map(key => [key, (...args) => defaults()[key](...args)])) };
+  ...Object.fromEntries(['list', 'switchTo', 'prepareAdd', 'remove'].map(key => [key, (...args) => {
+    if (process.platform === 'win32' && require('./wsl.cjs').isActive()) {
+      if (key === 'list') return Promise.resolve({ supported: false, accounts: [] });
+      return Promise.reject(new Error('WSL 工作区暂不支持切换 Google 账号。'));
+    }
+    return defaults()[key](...args);
+  }])) };

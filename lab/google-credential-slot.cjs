@@ -1,10 +1,15 @@
 'use strict';
 const childProcess = require('node:child_process');
 const { promisify } = require('node:util');
+const { createWindowsCredentialSlot } = require('./google-credential-slot-windows.cjs');
 const execFile = promisify(childProcess.execFile);
 const format = /^go-keyring-base64:[A-Za-z0-9+/]+={0,2}$/;
 
 function createKeychainSlot({ service, account }) {
+  function payloadOf(value) {
+    if (typeof value !== 'string' || !format.test(value)) throw new Error('无法识别 Lab 的 Google 登录格式。');
+    return Buffer.from(value.slice('go-keyring-base64:'.length), 'base64').toString('utf8');
+  }
   async function read() {
     try {
       const { stdout } = await execFile('/usr/bin/security', ['find-generic-password', '-s', service, '-a', account, '-w']);
@@ -36,9 +41,11 @@ function createKeychainSlot({ service, account }) {
       if (error.code !== 44) throw new Error('无法移除钥匙串中的 Google 登录。');
     }
   }
-  return { read, write, remove };
+  return { read, write, remove, payloadOf };
 }
 function labSlot() {
-  return process.platform === 'darwin' ? createKeychainSlot({ service: 'gemini', account: 'agy-lab-001' }) : undefined;
+  if (process.platform === 'darwin') return createKeychainSlot({ service: 'gemini', account: 'agy-lab-001' });
+  if (process.platform === 'win32') return createWindowsCredentialSlot({ target: 'gemini:agy-lab-001', user: 'agy-lab-001' });
+  return undefined;
 }
-module.exports = { createKeychainSlot, labSlot };
+module.exports = { createKeychainSlot, createWindowsCredentialSlot, labSlot };
