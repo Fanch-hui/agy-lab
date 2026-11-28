@@ -1,6 +1,6 @@
 # AGY Lab
 
-面向 macOS Apple Silicon 与 Windows x64 的 Antigravity 本机实验副本，支持在原生模型选择器与 Orchestrator 中使用第三方模型；Windows 构建可选支持 WSL 工作区（实验性）。Lab 使用独立的应用标识（`com.local.agy-lab`）、数据目录、系统凭据存储和 `agy-lab://` 登录回调，不覆盖原版配置或会话。
+面向 macOS Apple Silicon 与 Windows x64 的 Antigravity 本机实验副本，支持在原生模型选择器与 Orchestrator 中使用第三方模型，并可保存多个 Google 账号和 ChatGPT 账号、手动切换当前账号；Windows 构建可选支持 WSL 工作区（实验性）。Lab 使用独立的应用标识（`com.local.agy-lab`）、数据目录、系统凭据存储和 `agy-lab://` 登录回调，不覆盖原版配置或会话。
 
 > **非官方项目。** AGY Lab 与 Google、Antigravity 或 OpenAI 无官方关联。仓库仅发布项目源码和本地构建脚本，不分发 Antigravity 二进制、`app.asar`、图标、Electron 压缩包或构建好的应用。请使用自己合法取得的 Antigravity 安装包在本机生成副本。修改客户端或使用实验性订阅登录前，请自行确认适用的许可、服务条款和账号资格。
 
@@ -14,10 +14,6 @@
 
 第三方模型可以与官方模型在同一会话中交替使用，也可以担任 Orchestrator 的规划者或执行者。读写文件、运行命令和工具审批仍由 Antigravity 处理。
 
-ChatGPT 订阅可添加多个账号，手动切换当前账号；所有 ChatGPT 连接使用当前账号。
-macOS 和 Windows 本地工作区可保存并手动切换多个 Google 账号，切换后主窗口会重新加载；添加时在主窗口登录新账号。
-移除 Google 账号只在本机忘记该账号，不会撤销 Google 授权。Windows 功能尚未在真实 Windows 上验收，WSL 工作区暂不支持 Google 账号切换。
-
 ### 请求去向与诊断
 
 - 只有选中第三方模型的生成请求会转给对应服务。Lab 重建请求，不复制 Google 的请求头或项目元数据，但**会将生成所需的对话、代码片段及工具结果发给选定服务商**。Google 登录、额度和官方模型请求仍发往 Google；Lab 只在返回的模型目录中追加本地连接。
@@ -25,7 +21,30 @@ macOS 和 Windows 本地工作区可保存并手动切换多个 Google 账号，
 - 如果外部请求在收到 HTTP 响应前因网络错误失败（如连接被重置、DNS 解析失败），最多重试 3 次（间隔 1、2、4 秒）；拒绝重定向等确定性错误不重试；收到错误状态、响应开始后失败或用户取消时不重试。最终错误会显示模型、服务商及可用的失败原因（如网络错误码），不会自动换用其他模型。
 - **显示云端请求清单**查看路径、状态码及请求结构统计；清单不记录请求头、令牌、对话正文或文件内容。**导出模型诊断**可查看语言服务给界面的模型列表。分享诊断文件前请先检查其中的模型名、工具名和其他环境信息。
 
-API Key 和 ChatGPT OAuth 凭据由 Electron `safeStorage` 加密后保存在 Lab 用户数据目录；macOS 使用系统钥匙串，Windows 使用 DPAPI。更多边界说明和漏洞报告方式见 [SECURITY.md](SECURITY.md)。
+API Key、ChatGPT OAuth 凭据和已保存的 Google 账号副本由 Electron `safeStorage` 加密后保存在 Lab 用户数据目录；macOS 使用系统钥匙串，Windows 使用 DPAPI。更多边界说明和漏洞报告方式见 [SECURITY.md](SECURITY.md)。
+
+## 多账号
+
+Google 和 ChatGPT 都可以保留多个账号的登录，同一时间各只使用一个「当前」账号，由你手动切换。入口都在 **账号与模型连接…** 窗口。
+
+### Google 账号
+
+- **记住账号**：在主窗口登录后，该账号会出现在「Google 账号」一栏并标为当前。
+- **添加**：点 **添加 Google 账号**，主窗口变为未登录（原账号已保存），再在主窗口登录另一个账号。
+- **切换**：在目标账号一行点 **切换**，语言服务会重启，主窗口重新加载后即为该账号。本地的历史对话所有账号共用。
+- **移除**：只在本机忘记该账号，不会撤销 Google 授权。
+
+换账号时不要使用主窗口自带的退出登录：它会让 Google 作废该账号的凭据，之后无法再切回。
+
+当前账号的凭据仍由语言服务存放在系统凭据存储中（macOS 钥匙串、Windows 凭据管理器），Lab 只在切换时改写这一项；其他账号的副本加密保存在 Lab 数据目录。macOS 已用真实账号验收；Windows 本地工作区已实现，但尚未在真实 Windows 上运行过。WSL 工作区的登录保存在发行版内，不支持切换。
+
+### ChatGPT 账号
+
+- **添加**：点 **添加 ChatGPT 账号**，在浏览器授权。授权的是浏览器当前登录的 ChatGPT 账号，添加另一个账号前请先在浏览器里切换；同一账号不能重复添加。
+- **切换**：在目标账号一行点 **切换**，下一次请求起使用该账号的订阅共享额度，无需重启。添加账号不会自动切换，只有第一个账号会自动成为当前。
+- **移除**：退出该账号并尝试撤销授权；移除的是当前账号时，改用列表中的下一个。
+
+已添加的订阅模型由所有 ChatGPT 账号共用。账号套餐不同时，某个模型可能在另一个账号上不可用，可用该账号重新 **获取订阅模型**。切换后首轮请求不会命中提示缓存。
 
 ## 本地构建
 
@@ -47,7 +66,7 @@ python3 scripts/build_app.py --source /Applications/Antigravity.app
 
 ### Windows x64
 
-需要 Windows x64 原版 Antigravity **2.35.1、2.35.2 或 2.36.0** 的安装目录。输出为免安装目录 `dist\Antigravity Lab\`。2.36.0 的补丁已在官方文件上逐字节核对，但尚未在 Windows 上完成实机验收：
+需要 Windows x64 原版 Antigravity **2.35.1、2.35.2 或 2.36.0** 的安装目录。输出为免安装目录 `dist\Antigravity Lab\`。2.36.0 已在 Windows 上完成构建和未登录状态下的启动检查；登录后的使用（包括 Google 账号切换）尚未在 Windows 上验收：
 
 ```powershell
 python scripts\build_app.py --source "$env:LOCALAPPDATA\Programs\antigravity"
@@ -63,9 +82,11 @@ python scripts\build_app.py --source C:\path\to\antigravity --installer C:\path\
 
 如果语言服务副本没有 PE 证书表，构建会跳过证书清理；如果存在补丁后失效的尾部证书块，构建会从副本移除它并清零 PE 校验和。Windows 副本使用独立数据目录、Windows 凭据隔离、`agy-lab://` 回调、系统托盘入口及 `com.local.agy-lab` AppUserModelID。
 
+Windows 构建只用到 Python 和 `asar`，也可以在 macOS 上对一份原版 Windows 安装目录运行同一命令（不带 `--installer`）；输入哈希在两个平台上的计算结果相同。
+
 #### WSL 工作区（实验性）
 
-目前只支持 2.36.0。补丁后的 Linux 语言服务已在 Ubuntu 容器中确认可以启动并使用独立的存储位置，但安装到发行版、登录和第三方模型交接尚未在真实的 Windows + WSL 上验收。
+目前只支持 2.36.0。带 WSL 的构建已在 Windows + Ubuntu 上确认可以把随包的 Linux 语言服务安装到发行版并启动；登录和第三方模型交接尚未验收。
 
 WSL 工作区需要在构建时加入同版本官方 Linux x64 语言服务；2.36.0 文件发布于 <https://storage.googleapis.com/antigravity-public/antigravity-hub/2.36.0-5596661662220288/unsigned/language_server-linux-x64>，构建会按登记的 SHA-256 核验并补丁后随 Lab 携带：
 
